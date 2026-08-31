@@ -6,6 +6,7 @@ const MOCK_PORT = 43117;
 const APP_PORT = 43118;
 const TODAY_START = "2026-08-31T00:00:00+09:00";
 const TOMORROW_START = "2026-09-01T00:00:00+09:00";
+const DAY_AFTER_TOMORROW_START = "2026-09-02T00:00:00+09:00";
 const EVENT = {
   id: "event-broadcast-club",
   summary: "방송부 회의",
@@ -55,7 +56,14 @@ const mockServer = http.createServer(async (req, res) => {
     const input = String(body.input);
     let intent;
 
-    if (input.includes("오늘 일정 뭐 있어")) {
+    if (input.includes("내일 일정 뭐 있어")) {
+      intent = calendarIntent({
+        action: "get_calendar_events",
+        start: TOMORROW_START,
+        end: DAY_AFTER_TOMORROW_START,
+        rangeLabel: "내일",
+      });
+    } else if (input.includes("오늘 일정 뭐 있어")) {
       intent = calendarIntent({
         action: "get_calendar_events",
         start: TODAY_START,
@@ -113,6 +121,13 @@ const mockServer = http.createServer(async (req, res) => {
 
   if (req.url === "/calendar") {
     calendarCalls.push(body);
+    if (
+      body.action === "calendar_get" &&
+      body.data.start === TOMORROW_START
+    ) {
+      res.writeHead(200).end("");
+      return;
+    }
     responseJson(res, body.action === "calendar_get" ? [EVENT] : { success: true });
     return;
   }
@@ -185,6 +200,12 @@ nextProcess.stderr.on("data", (chunk) => (serverOutput += chunk.toString()));
 try {
   await waitForServer(`http://127.0.0.1:${APP_PORT}`);
 
+  const emptyDayConversation = createConversation();
+  assert.match(
+    await emptyDayConversation("내일 일정 뭐 있어?"),
+    /내일은 등록된 일정이 없어/u,
+  );
+
   const updateConversation = createConversation();
   assert.match(await updateConversation("오늘 일정 뭐 있어?"), /방송부 회의/u);
   assert.match(
@@ -239,7 +260,7 @@ try {
     updateCountBeforeCancel,
   );
 
-  console.log("Calendar multi-step flow tests passed (3/3).");
+  console.log("Calendar flow tests passed (empty result + multi-step 3/3).");
 } catch (error) {
   console.error(serverOutput);
   throw error;

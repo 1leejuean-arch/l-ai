@@ -113,10 +113,16 @@ export async function callCalendarN8n(
     return;
   }
 
+  const raw = await response.text();
+
+  if (!raw.trim()) {
+    return [];
+  }
+
   let result: unknown;
 
   try {
-    result = await response.json();
+    result = JSON.parse(raw);
   } catch {
     console.error("[Calendar] Webhook returned invalid JSON.");
     throw new Error("Calendar webhook returned invalid JSON");
