@@ -74,10 +74,11 @@ async function sendCalendarRequest<A extends CalendarAction>(
       body: JSON.stringify({ action, data }),
       signal: AbortSignal.timeout(CALENDAR_REQUEST_TIMEOUT_MS),
     });
-  } catch {
-    console.error("[Calendar] Webhook request failed.");
-    throw new Error("Calendar webhook request failed");
-  }
+  } catch (error) {
+  console.error("[Calendar] Webhook request failed.", error);
+  console.error("[Calendar] Target URL:", getCalendarUrl());
+  throw new Error("Calendar webhook request failed");
+}
 
   if (!response.ok) {
     console.error(`[Calendar] Webhook returned HTTP ${response.status}.`);
