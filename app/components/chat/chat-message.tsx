@@ -1,8 +1,43 @@
 import type { ChatMessage as ChatMessageType } from "@/app/types/chat";
+import type { ReactNode } from "react";
 
 type ChatMessageProps = {
   message: ChatMessageType;
 };
+
+const DRIVE_LINK_PATTERN =
+  /\[((?:\\.|[^\]\\])+)\]\((https:\/\/drive\.google\.com\/open\?id=[A-Za-z0-9._~%+-]+)\)/gu;
+
+function renderMessageContent(content: string): ReactNode {
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+
+  for (const match of content.matchAll(DRIVE_LINK_PATTERN)) {
+    if (match.index > lastIndex) {
+      parts.push(content.slice(lastIndex, match.index));
+    }
+
+    parts.push(
+      <a
+        key={`${match.index}-${match[2]}`}
+        href={match[2]}
+        target="_blank"
+        rel="noreferrer"
+        className="font-medium text-sky-300 underline decoration-sky-400/40 underline-offset-4 transition hover:text-sky-200"
+      >
+        {match[1].replace(/\\([\\\[\]])/gu, "$1")}
+      </a>,
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex === 0) {
+    return content;
+  }
+
+  parts.push(content.slice(lastIndex));
+  return parts;
+}
 
 export function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === "user";
@@ -26,7 +61,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
               : "rounded-bl-md border border-white/[0.07] bg-white/[0.055] text-zinc-200"
         }`}
       >
-        {message.content}
+        {isUser ? message.content : renderMessageContent(message.content)}
       </div>
     </article>
   );

@@ -46,6 +46,9 @@ import type {
   CalendarUpdateRequest,
   PendingCalendarAction,
 } from "@/lib/calendar/types";
+import { formatDriveSearchResults } from "@/lib/drive/format";
+import { parseDriveSearchIntent } from "@/lib/drive/intent";
+import { searchGoogleDrive } from "@/lib/drive/n8n";
 import { callN8nWebhook } from "@/lib/n8n/client";
 
 type ChatRequestBody = {
@@ -177,6 +180,15 @@ async function handleN8nTest(message: string) {
     );
   } catch {
     return chatError("n8n 자동화 서버에 연결하지 못했습니다.", 502);
+  }
+}
+
+async function handleDriveSearch(query: string) {
+  try {
+    const files = await searchGoogleDrive(query);
+    return chatReply(formatDriveSearchResults(query, files));
+  } catch {
+    return chatError("Google Drive 파일 검색에 실패했습니다.", 502);
   }
 }
 
@@ -618,6 +630,14 @@ async function handleChatRequest(request: Request, sessionId: string) {
     isActionApproval(shortReply)
   ) {
     return chatReply("확인할 일정 작업이 없습니다.");
+  }
+
+  const driveIntent = parseDriveSearchIntent(message);
+
+  if (driveIntent) {
+    return driveIntent.query
+      ? handleDriveSearch(driveIntent.query)
+      : chatReply("Google Drive에서 어떤 파일을 찾을까?");
   }
 
   try {
