@@ -7,12 +7,40 @@ const APP_PORT = 43118;
 const TODAY_START = "2026-08-31T00:00:00+09:00";
 const TOMORROW_START = "2026-09-01T00:00:00+09:00";
 const DAY_AFTER_TOMORROW_START = "2026-09-02T00:00:00+09:00";
+const UPDATE_DAY_START = "2026-09-03T00:00:00+09:00";
+const UPDATE_DAY_END = "2026-09-04T00:00:00+09:00";
 const EVENT = {
   id: "event-broadcast-club",
   summary: "방송부 회의",
   start: { dateTime: "2026-08-31T18:00:00+09:00" },
   end: { dateTime: "2026-08-31T19:00:00+09:00" },
 };
+const UPDATE_EVENTS = [
+  {
+    id: "event-test",
+    summary: "테스트 일정",
+    start: { dateTime: "2026-09-03T17:00:00+09:00" },
+    end: { dateTime: "2026-09-03T18:00:00+09:00" },
+  },
+  {
+    id: "event-long",
+    summary: "긴 일정",
+    start: { dateTime: "2026-09-03T14:00:00+09:00" },
+    end: { dateTime: "2026-09-03T15:30:00+09:00" },
+  },
+  {
+    id: "event-range",
+    summary: "범위 일정",
+    start: { dateTime: "2026-09-03T13:00:00+09:00" },
+    end: { dateTime: "2026-09-03T14:00:00+09:00" },
+  },
+  {
+    id: "event-end",
+    summary: "종료 일정",
+    start: { dateTime: "2026-09-03T10:00:00+09:00" },
+    end: { dateTime: "2026-09-03T11:00:00+09:00" },
+  },
+];
 
 const calendarCalls = [];
 let openAiCalls = 0;
@@ -56,7 +84,40 @@ const mockServer = http.createServer(async (req, res) => {
     const input = String(body.input);
     let intent;
 
-    if (input.includes("내일 일정 뭐 있어")) {
+    if (input.includes("방금 만든 테스트 일정 오후 6시로 바꿔줘")) {
+      intent = calendarIntent({
+        action: "update_calendar_event",
+        start: UPDATE_DAY_START,
+        end: UPDATE_DAY_END,
+        targetTitle: "테스트 일정",
+        newEnd: "2026-09-03T18:00:00+09:00",
+      });
+    } else if (input.includes("긴 일정 오후 4시로 바꿔줘")) {
+      intent = calendarIntent({
+        action: "update_calendar_event",
+        start: UPDATE_DAY_START,
+        end: UPDATE_DAY_END,
+        targetTitle: "긴 일정",
+        newEnd: "2026-09-03T15:30:00+09:00",
+      });
+    } else if (input.includes("범위 일정 오후 6시부터 8시까지로 바꿔줘")) {
+      intent = calendarIntent({
+        action: "update_calendar_event",
+        start: UPDATE_DAY_START,
+        end: UPDATE_DAY_END,
+        targetTitle: "범위 일정",
+        newStart: "2026-09-03T18:00:00+09:00",
+        newEnd: "2026-09-03T20:00:00+09:00",
+      });
+    } else if (input.includes("종료 일정 끝나는 시간을 오후 7시로 바꿔줘")) {
+      intent = calendarIntent({
+        action: "update_calendar_event",
+        start: UPDATE_DAY_START,
+        end: UPDATE_DAY_END,
+        targetTitle: "종료 일정",
+        newEnd: "2026-09-03T19:00:00+09:00",
+      });
+    } else if (input.includes("내일 일정 뭐 있어")) {
       intent = calendarIntent({
         action: "get_calendar_events",
         start: TOMORROW_START,
@@ -121,6 +182,13 @@ const mockServer = http.createServer(async (req, res) => {
 
   if (req.url === "/calendar") {
     calendarCalls.push(body);
+    if (
+      body.action === "calendar_get" &&
+      body.data.start === UPDATE_DAY_START
+    ) {
+      responseJson(res, UPDATE_EVENTS);
+      return;
+    }
     if (
       body.action === "calendar_get" &&
       body.data.start === TOMORROW_START
@@ -206,6 +274,57 @@ try {
     /내일은 등록된 일정이 없어/u,
   );
 
+  const singleStartConversation = createConversation();
+  const singleStartConfirmation = await singleStartConversation(
+    "방금 만든 테스트 일정 오후 6시로 바꿔줘",
+  );
+  assert.match(singleStartConfirmation, /변경 후/u);
+  assert.match(singleStartConfirmation, /오후 5:00 ~ 오후 6:00/u);
+  assert.match(singleStartConfirmation, /오후 6:00 ~ 오후 7:00/u);
+  assert.equal(
+    calendarCalls.some(
+      ({ action, data }) =>
+        action === "calendar_update" && data.eventId === "event-test",
+    ),
+    false,
+  );
+  await singleStartConversation("수정");
+  assert.deepEqual(
+    calendarCalls.find(
+      ({ action, data }) =>
+        action === "calendar_update" && data.eventId === "event-test",
+    ),
+    {
+      action: "calendar_update",
+      data: {
+        eventId: "event-test",
+        title: "테스트 일정",
+        start: "2026-09-03T18:00:00+09:00",
+        end: "2026-09-03T19:00:00+09:00",
+      },
+    },
+  );
+
+  const longEventConversation = createConversation();
+  const longEventConfirmation = await longEventConversation(
+    "긴 일정 오후 4시로 바꿔줘",
+  );
+  assert.match(longEventConfirmation, /오후 2:00 ~ 오후 3:30/u);
+  assert.match(longEventConfirmation, /오후 4:00 ~ 오후 5:30/u);
+
+  const rangeConversation = createConversation();
+  const rangeConfirmation = await rangeConversation(
+    "범위 일정 오후 6시부터 8시까지로 바꿔줘",
+  );
+  assert.match(rangeConfirmation, /변경 후/u);
+  assert.match(rangeConfirmation, /오후 6:00 ~ 오후 8:00/u);
+
+  const endConversation = createConversation();
+  const endConfirmation = await endConversation(
+    "종료 일정 끝나는 시간을 오후 7시로 바꿔줘",
+  );
+  assert.match(endConfirmation, /오전 10:00 ~ 오후 7:00/u);
+
   const updateConversation = createConversation();
   assert.match(await updateConversation("오늘 일정 뭐 있어?"), /방송부 회의/u);
   assert.match(
@@ -222,7 +341,8 @@ try {
   assert.match(await updateConversation("수정"), /일정을 수정했어/u);
 
   const updateCall = calendarCalls.find(
-    ({ action }) => action === "calendar_update",
+    ({ action, data }) =>
+      action === "calendar_update" && data.eventId === EVENT.id,
   );
   assert.deepEqual(updateCall, {
     action: "calendar_update",
@@ -260,7 +380,9 @@ try {
     updateCountBeforeCancel,
   );
 
-  console.log("Calendar flow tests passed (empty result + multi-step 3/3).");
+  console.log(
+    "Calendar flow tests passed (time updates 5/5 + empty result + multi-step 3/3).",
+  );
 } catch (error) {
   console.error(serverOutput);
   throw error;

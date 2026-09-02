@@ -15,7 +15,10 @@ import {
 } from "@/lib/calendar/format";
 import {
   formatMeridiemQuestion,
+  hasExplicitCalendarDate,
+  parseCalendarTextTimeChange,
   parseMeridiemReply,
+  resolveCandidateDateTime,
   resolveCandidateStart,
 } from "@/lib/calendar/clarification";
 import {
@@ -241,33 +244,77 @@ function prepareUpdateNextStep(
   request: CalendarUpdateRequest,
   originalMessage: string,
 ) {
-  if (request.missingField === "ampm" && request.unresolvedTime) {
+  const textTimeChange = hasExplicitCalendarDate(originalMessage)
+    ? null
+    : parseCalendarTextTimeChange(originalMessage);
+  let normalizedRequest = request;
+
+  if (textTimeChange?.kind === "ambiguous") {
+    normalizedRequest = {
+      ...request,
+      patch: { ...request.patch, start: null, end: null },
+      unresolvedTime: textTimeChange.time,
+      missingField: "ampm",
+    };
+  } else if (textTimeChange?.kind === "resolved") {
+    const start = textTimeChange.start
+      ? resolveCandidateDateTime(candidate, textTimeChange.start)
+      : null;
+    const end = textTimeChange.end
+      ? resolveCandidateDateTime(candidate, textTimeChange.end)
+      : null;
+
+    if (
+      (textTimeChange.start === null || start) &&
+      (textTimeChange.end === null || end)
+    ) {
+      normalizedRequest = {
+        ...request,
+        patch: { ...request.patch, start, end },
+        unresolvedTime: null,
+        missingField: null,
+        clarification: null,
+      };
+    }
+  }
+
+  if (
+    normalizedRequest.missingField === "ampm" &&
+    normalizedRequest.unresolvedTime
+  ) {
     setPendingCalendarAction(sessionId, {
       kind: "clarify_update",
       targetEvent: candidate,
-      requestedChanges: request.patch,
-      unresolvedTime: request.unresolvedTime,
+      requestedChanges: normalizedRequest.patch,
+      unresolvedTime: normalizedRequest.unresolvedTime,
       missingField: "ampm",
       stage: "clarification",
     });
-    return chatReply(formatMeridiemQuestion(candidate, request.unresolvedTime));
+    return chatReply(
+      formatMeridiemQuestion(candidate, normalizedRequest.unresolvedTime),
+    );
   }
 
-  if (request.missingField) {
+  if (normalizedRequest.missingField) {
     const question =
-      request.clarification || "일정 수정에 필요한 정보를 조금 더 알려줘.";
+      normalizedRequest.clarification ||
+      "일정 수정에 필요한 정보를 조금 더 알려줘.";
     setPendingCalendarAction(sessionId, {
       kind: "clarify_request",
       operation: "update",
       originalMessage,
       question,
-      missingField: request.missingField,
+      missingField: normalizedRequest.missingField,
       stage: "clarification",
     });
     return chatReply(question);
   }
 
-  return prepareUpdateConfirmation(sessionId, candidate, request.patch);
+  return prepareUpdateConfirmation(
+    sessionId,
+    candidate,
+    normalizedRequest.patch,
+  );
 }
 
 function prepareDeleteConfirmation(

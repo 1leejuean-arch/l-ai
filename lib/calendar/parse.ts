@@ -286,6 +286,10 @@ ${
 - targetTitle에는 기존 일정 제목을, 기존 시작 시각을 사용자가 특정했다면 targetStart에 작성한다.
 - 제목 변경은 newTitle, 시작 변경은 newStart, 종료 변경을 명시한 경우에만 newEnd에 작성한다.
 - 시작 시각만 바꾸고 종료 시각을 말하지 않았다면 newEnd는 null이다. 서버가 기존 일정 길이를 유지한다.
+- 변경 시간이 하나만 있고 "끝나는 시간" 또는 "종료 시간"이라고 명시하지 않았다면 그 시간은 항상 새 시작 시각(newStart)이다. 기존 종료 시각과 우연히 같아도 newEnd로 쓰지 않는다.
+- "오후 6시부터 8시까지"처럼 범위를 말하면 newStart는 18:00, newEnd는 20:00이다. 두 번째 시간에 오전/오후가 생략되면 첫 번째 시간대 표현을 따른다.
+- "끝나는 시간을 오후 7시로"처럼 종료를 명시한 경우에만 newEnd만 작성하고 newStart는 null이다.
+- "시작 시간을 오후 6시로"는 newStart만 작성하고 newEnd는 null이다.
 - 시간만 변경하면 newTitle은 null이다. 제목만 변경하면 newStart와 newEnd는 null이다.
 - "8시"처럼 오전/오후가 불명확하면 newStart는 null, timeHour는 8, timeMinute는 0, missingField는 ampm으로 작성한다. 날짜가 없으면 오늘 범위에서 대상을 먼저 찾는다.
 - 시간 변경이 확정되면 timeHour, timeMinute, missingField는 null이다.
