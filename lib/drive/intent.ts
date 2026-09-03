@@ -2,7 +2,13 @@ import type { DriveSearchIntent } from "./types";
 
 const DRIVE_CONTEXT_PATTERN =
   /(?:내\s*)?(?:구글\s*)?드라이브|google\s*drive/iu;
-const FILE_SEARCH_CONTEXT_PATTERN = /(?:파일|문서).*(?:찾아|검색|보여|있어)/u;
+
+const FILE_SEARCH_CONTEXT_PATTERN =
+  /(?:파일|문서).*(?:찾아|검색|보여|있어)/u;
+
+const RECENT_FILE_PATTERN =
+  /(?:최근|최근에|최신).*(?:수정|업데이트|파일|문서)|(?:최근\s*수정한?\s*(?:파일|문서))/u;
+
 const SEARCH_COMMAND_PATTERN =
   /\s*(?:찾아\s*줘|찾아줘|검색해\s*줘|검색해줘|보여\s*줘|보여줘|있어)\s*[?.!。！？]*$/u;
 
@@ -20,13 +26,26 @@ function cleanDriveQuery(message: string) {
 export function parseDriveSearchIntent(
   message: string,
 ): DriveSearchIntent | null {
-  if (
-    !DRIVE_CONTEXT_PATTERN.test(message) &&
-    !FILE_SEARCH_CONTEXT_PATTERN.test(message)
-  ) {
+  const hasDriveContext = DRIVE_CONTEXT_PATTERN.test(message);
+  const hasFileSearchContext = FILE_SEARCH_CONTEXT_PATTERN.test(message);
+
+  if (!hasDriveContext && !hasFileSearchContext) {
     return null;
   }
 
+  // 최근 수정 파일 조회
+  if (RECENT_FILE_PATTERN.test(message)) {
+    return {
+      action: "recent",
+      query: null,
+    };
+  }
+
+  // 일반 파일 검색
   const query = cleanDriveQuery(message);
-  return { query: query && query !== "파일" && query !== "문서" ? query : null };
+
+  return {
+    action: "search",
+    query: query && query !== "파일" && query !== "문서" ? query : null,
+  };
 }

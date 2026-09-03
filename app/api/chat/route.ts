@@ -46,9 +46,15 @@ import type {
   CalendarUpdateRequest,
   PendingCalendarAction,
 } from "@/lib/calendar/types";
-import { formatDriveSearchResults } from "@/lib/drive/format";
+import {
+  formatDriveSearchResults,
+  formatRecentDriveFiles,
+} from "@/lib/drive/format";
 import { parseDriveSearchIntent } from "@/lib/drive/intent";
-import { searchGoogleDrive } from "@/lib/drive/n8n";
+import {
+  getRecentGoogleDriveFiles,
+  searchGoogleDrive,
+} from "@/lib/drive/n8n";
 import { callN8nWebhook } from "@/lib/n8n/client";
 
 type ChatRequestBody = {
@@ -632,13 +638,21 @@ async function handleChatRequest(request: Request, sessionId: string) {
     return chatReply("확인할 일정 작업이 없습니다.");
   }
 
-  const driveIntent = parseDriveSearchIntent(message);
+ const driveIntent = parseDriveSearchIntent(message);
 
-  if (driveIntent) {
+if (driveIntent) {
+  if (driveIntent.action === "recent") {
+  const files = await getRecentGoogleDriveFiles();
+
+  return chatReply(formatRecentDriveFiles(files));
+}
+
+  if (driveIntent.action === "search") {
     return driveIntent.query
       ? handleDriveSearch(driveIntent.query)
       : chatReply("Google Drive에서 어떤 파일을 찾을까?");
   }
+}
 
   try {
     const calendarResult = await parseCalendarRequest(message);

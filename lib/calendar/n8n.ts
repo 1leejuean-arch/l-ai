@@ -24,7 +24,9 @@ function getCalendarUrl() {
   return webhookUrl;
 }
 
-function isCalendarEventTime(value: unknown): value is GoogleCalendarEventTime {
+function isCalendarEventTime(
+  value: unknown,
+): value is GoogleCalendarEventTime {
   if (typeof value !== "object" || value === null) {
     return false;
   }
@@ -37,7 +39,9 @@ function isCalendarEventTime(value: unknown): value is GoogleCalendarEventTime {
   );
 }
 
-function isGoogleCalendarEvent(value: unknown): value is GoogleCalendarEvent {
+function isGoogleCalendarEvent(
+  value: unknown,
+): value is GoogleCalendarEvent {
   if (typeof value !== "object" || value === null) {
     return false;
   }
@@ -70,15 +74,17 @@ async function sendCalendarRequest<A extends CalendarAction>(
   try {
     response = await fetch(getCalendarUrl(), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+      },
       body: JSON.stringify({ action, data }),
       signal: AbortSignal.timeout(CALENDAR_REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
-  console.error("[Calendar] Webhook request failed.", error);
-  console.error("[Calendar] Target URL:", getCalendarUrl());
-  throw new Error("Calendar webhook request failed");
-}
+    console.error("[Calendar] Webhook request failed.", error);
+    console.error("[Calendar] Target URL:", getCalendarUrl());
+    throw new Error("Calendar webhook request failed");
+  }
 
   if (!response.ok) {
     console.error(`[Calendar] Webhook returned HTTP ${response.status}.`);
@@ -92,21 +98,29 @@ export async function callCalendarN8n(
   action: "calendar_create",
   data: CalendarEvent,
 ): Promise<void>;
+
 export async function callCalendarN8n(
   action: "calendar_get",
   data: CalendarRange,
 ): Promise<GoogleCalendarEvent[]>;
+
 export async function callCalendarN8n(
   action: "calendar_update",
   data: CalendarUpdateData,
 ): Promise<void>;
+
 export async function callCalendarN8n(
   action: "calendar_delete",
   data: CalendarDeleteData,
 ): Promise<void>;
+
 export async function callCalendarN8n(
   action: CalendarAction,
-  data: CalendarEvent | CalendarRange | CalendarUpdateData | CalendarDeleteData,
+  data:
+    | CalendarEvent
+    | CalendarRange
+    | CalendarUpdateData
+    | CalendarDeleteData,
 ): Promise<void | GoogleCalendarEvent[]> {
   const response = await sendCalendarRequest(action, data);
 
