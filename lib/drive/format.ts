@@ -5,10 +5,6 @@ function escapeMarkdownLabel(value: string) {
 }
 
 function getGoogleDriveFileUrl(file: GoogleDriveFile) {
-  if (file.webViewLink?.trim()) {
-    return file.webViewLink.trim();
-  }
-
   const encodedId = encodeURIComponent(file.id);
 
   return `https://drive.google.com/open?id=${encodedId}`;
