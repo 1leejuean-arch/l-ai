@@ -51,20 +51,10 @@ function parseDriveFiles(value: unknown): GoogleDriveFile[] {
 }
 
 async function callDriveWebhook(
-  action: DriveAction,
-  query?: string,
-): Promise<GoogleDriveFile[]> {
+  action: DriveAction | "read",
+  payload: Record<string, unknown> = {},
+) {
   let response: Response;
-
-  const body =
-    action === "search"
-      ? {
-          action: "search",
-          query: query?.trim() ?? "",
-        }
-      : {
-          action: "recent",
-        };
 
   try {
     response = await fetch(getDriveUrl(), {
@@ -72,12 +62,14 @@ async function callDriveWebhook(
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        action,
+        ...payload,
+      }),
       signal: AbortSignal.timeout(DRIVE_REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
     console.error("[Drive] Webhook request failed.", error);
-    console.error("[Drive] Target URL:", getDriveUrl());
     throw new Error("Drive webhook request failed");
   }
 
@@ -86,32 +78,65 @@ async function callDriveWebhook(
     throw new Error("Drive webhook request failed");
   }
 
-  const raw = await response.text();
+  return response;
+}
 
-  if (!raw.trim()) {
-    return [];
-  }
+export async function searchGoogleDrive(query: string) {
+  const response = await callDriveWebhook("search", {
+    query,
+  });
 
   let result: unknown;
 
   try {
-    result = JSON.parse(raw);
+    result = await response.json();
   } catch {
-    console.error("[Drive] Webhook returned invalid JSON.");
-    throw new Error("Drive webhook returned invalid JSON");
+    console.error("[Drive] Search webhook returned invalid JSON.");
+    throw new Error("Drive search webhook returned invalid JSON");
   }
 
   return parseDriveFiles(result);
 }
 
-export async function searchGoogleDrive(
-  query: string,
-): Promise<GoogleDriveFile[]> {
-  return callDriveWebhook("search", query);
+export async function getRecentGoogleDriveFiles() {
+  const response = await callDriveWebhook("recent");
+
+  let result: unknown;
+
+  try {
+    result = await response.json();
+  } catch {
+    console.error("[Drive] Recent webhook returned invalid JSON.");
+    throw new Error("Drive recent webhook returned invalid JSON");
+  }
+
+  return parseDriveFiles(result);
 }
 
-export async function getRecentGoogleDriveFiles(): Promise<
-  GoogleDriveFile[]
-> {
-  return callDriveWebhook("recent");
+export async function readGoogleDriveFile(fileId: string) {
+  const response = await callDriveWebhook("read", {
+    fileId,
+  });
+
+  let result: unknown;
+
+  try {
+    result = await response.json();
+  } catch {
+    console.error("[Drive] Read webhook returned invalid JSON.");
+    throw new Error("Drive read webhook returned invalid JSON");
+  }
+
+  const item = Array.isArray(result) ? result[0] : result;
+
+  if (
+    typeof item !== "object" ||
+    item === null ||
+    typeof (item as Record<string, unknown>).text !== "string"
+  ) {
+    console.error("[Drive] Read webhook returned invalid file content.");
+    throw new Error("Drive read webhook returned invalid file content");
+  }
+
+  return (item as { text: string }).text.trim();
 }

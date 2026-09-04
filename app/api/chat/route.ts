@@ -1,6 +1,7 @@
 import type { ChatApiError, ChatApiResponse } from "@/app/types/chat";
 import {
   generateAssistantReply,
+   summarizeDriveFile,
   OpenAIConfigurationError,
 } from "@/lib/ai/openai";
 import {
@@ -53,6 +54,7 @@ import {
 import { parseDriveSearchIntent } from "@/lib/drive/intent";
 import {
   getRecentGoogleDriveFiles,
+  readGoogleDriveFile,
   searchGoogleDrive,
 } from "@/lib/drive/n8n";
 import { callN8nWebhook } from "@/lib/n8n/client";
@@ -642,10 +644,43 @@ async function handleChatRequest(request: Request, sessionId: string) {
 
 if (driveIntent) {
   if (driveIntent.action === "recent") {
-  const files = await getRecentGoogleDriveFiles();
+    const files = await getRecentGoogleDriveFiles();
 
-  return chatReply(formatRecentDriveFiles(files));
-}
+    return chatReply(formatRecentDriveFiles(files));
+  }
+
+  if (driveIntent.action === "summarize") {
+    if (!driveIntent.query) {
+      return chatReply("Google Drive에서 어떤 파일을 요약할까?");
+    }
+
+    const files = await searchGoogleDrive(driveIntent.query);
+
+    if (files.length === 0) {
+      return chatReply(
+        `Google Drive에서 '${driveIntent.query}' 파일을 찾지 못했어.`,
+      );
+    }
+
+    const file = files[0];
+    const text = await readGoogleDriveFile(file.id);
+
+    if (!text) {
+      return chatReply(
+        `'${file.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+      );
+    }
+
+    const summary = await summarizeDriveFile(file.name, text);
+
+const fileUrl =
+  file.webViewLink ||
+  `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+
+return chatReply(
+  `**${file.name} 요약**\n\n${summary}\n\n[원본 파일 열기](${fileUrl})`,
+);
+  }
 
   if (driveIntent.action === "search") {
     return driveIntent.query

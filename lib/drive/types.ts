@@ -5,7 +5,7 @@ export type GoogleDriveFile = {
   modifiedTime?: string;
 };
 
-export type DriveAction = "search" | "recent";
+export type DriveAction = "search" | "recent" | "summarize";
 
 export type DriveSearchIntent = {
   action: DriveAction;
