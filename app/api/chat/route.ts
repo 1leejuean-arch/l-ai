@@ -1,7 +1,8 @@
 import type { ChatApiError, ChatApiResponse } from "@/app/types/chat";
 import {
+  answerDriveFileQuestion,
   generateAssistantReply,
-   summarizeDriveFile,
+  summarizeDriveFile,
   OpenAIConfigurationError,
 } from "@/lib/ai/openai";
 import {
@@ -673,13 +674,50 @@ if (driveIntent) {
 
     const summary = await summarizeDriveFile(file.name, text);
 
-const fileUrl =
-  file.webViewLink ||
-  `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+    const fileUrl =
+      file.webViewLink ||
+      `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
 
-return chatReply(
-  `**${file.name} 요약**\n\n${summary}\n\n[원본 파일 열기](${fileUrl})`,
-);
+    return chatReply(
+      `**${file.name} 요약**\n\n${summary}\n\n[원본 파일 열기](${fileUrl})`,
+    );
+  }
+
+  if (driveIntent.action === "ask") {
+    if (!driveIntent.query || !driveIntent.question) {
+      return chatReply("어떤 파일에서 무엇을 확인할까?");
+    }
+
+    const files = await searchGoogleDrive(driveIntent.query);
+
+    if (files.length === 0) {
+      return chatReply(
+        `Google Drive에서 '${driveIntent.query}' 파일을 찾지 못했어.`,
+      );
+    }
+
+    const file = files[0];
+    const text = await readGoogleDriveFile(file.id);
+
+    if (!text) {
+      return chatReply(
+        `'${file.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+      );
+    }
+
+    const answer = await answerDriveFileQuestion(
+      file.name,
+      text,
+      driveIntent.question,
+    );
+
+    const fileUrl =
+      file.webViewLink ||
+      `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+
+    return chatReply(
+      `**${file.name}에서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
+    );
   }
 
   if (driveIntent.action === "search") {
@@ -688,69 +726,12 @@ return chatReply(
       : chatReply("Google Drive에서 어떤 파일을 찾을까?");
   }
 }
-
-  try {
-    const calendarResult = await parseCalendarRequest(message);
-
-    if (calendarResult.kind === "create") {
-      setPendingCalendarAction(sessionId, {
-        kind: "create",
-        event: calendarResult.event,
-      });
-      return chatReply(formatCalendarConfirmation(calendarResult.event));
-    }
-
-    if (calendarResult.kind === "get") {
-      return handleCalendarGet(
-        calendarResult.range,
-        calendarResult.rangeLabel,
-      );
-    }
-
-    if (calendarResult.kind === "update") {
-      return handleCalendarUpdate(sessionId, calendarResult.request, message);
-    }
-
-    if (calendarResult.kind === "delete") {
-      return handleCalendarDelete(sessionId, calendarResult.request);
-    }
-
-    if (calendarResult.kind === "clarify") {
-      if (calendarResult.operation) {
-        setPendingCalendarAction(sessionId, {
-          kind: "clarify_request",
-          operation: calendarResult.operation,
-          originalMessage: message,
-          question: calendarResult.message,
-          missingField: null,
-          stage: "clarification",
-        });
-      } else {
-        clearPendingCalendarAction(sessionId);
-      }
-      return chatReply(calendarResult.message);
-    }
-
-    const reply = await generateAssistantReply(message);
-    return chatReply(reply);
-  } catch (error) {
-    if (error instanceof OpenAIConfigurationError) {
-      return chatError(
-        "AI 서비스를 사용할 수 없습니다. 서버 설정을 확인해 주세요.",
-        503,
-      );
-    }
-
-    return chatError(
-      "AI 응답을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
-      502,
-    );
-  }
 }
-
 export async function POST(request: Request) {
-  const session = getCalendarSession(request);
-  const response = await handleChatRequest(request, session.id);
+  const sessionId =
+    request.headers.get("x-session-id") ||
+    request.headers.get("x-chat-session-id") ||
+    crypto.randomUUID();
 
-  return attachCalendarSession(response, request, session);
+  return handleChatRequest(request, sessionId);
 }

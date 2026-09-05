@@ -88,3 +88,52 @@ ${trimmedText}
 
   return summary;
 }
+export async function answerDriveFileQuestion(
+  fileName: string,
+  text: string,
+  question: string,
+) {
+  const openai = getOpenAIClient();
+
+  const trimmedText = text.slice(0, 30_000);
+
+  const response = await openai.responses.create({
+    model: getOpenAIModel(),
+    instructions: `
+너는 L-AI의 Google Drive 문서 질의응답 기능이다.
+
+사용자가 Google Drive 파일의 내용에 대해 질문하면,
+파일에서 추출된 텍스트만 근거로 답변해야 한다.
+
+규칙:
+- 질문에 직접 필요한 내용 위주로 답한다.
+- 문서에 없는 내용은 추측하지 않는다.
+- 표에서 추출된 텍스트는 행/열 구조가 깨질 수 있으므로 문맥을 최대한 복원한다.
+- 구조가 명확하지 않다면 그 사실을 짧게 알려준다.
+- 날짜, 시간, 대상, 장소, 일정 등 구체적인 정보가 있으면 명확히 정리한다.
+- 답변은 자연스러운 한국어로 작성한다.
+- 필요하면 목록 형태로 정리한다.
+- 파일 전체를 다시 요약하지 말고 사용자의 질문에 집중한다.
+`,
+    input: `
+파일명: ${fileName}
+
+사용자 질문:
+${question}
+
+--- 파일 내용 시작 ---
+${trimmedText}
+--- 파일 내용 끝 ---
+
+위 파일 내용만 근거로 사용자의 질문에 답해줘.
+`,
+  });
+
+  const answer = response.output_text.trim();
+
+  if (!answer) {
+    throw new Error("OpenAI returned an empty Drive answer");
+  }
+
+  return answer;
+}

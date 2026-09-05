@@ -5,9 +5,14 @@ export type GoogleDriveFile = {
   modifiedTime?: string;
 };
 
-export type DriveAction = "search" | "recent" | "summarize";
+export type DriveAction =
+  | "search"
+  | "recent"
+  | "summarize"
+  | "ask";
 
 export type DriveSearchIntent = {
   action: DriveAction;
   query: string | null;
+  question?: string | null;
 };
