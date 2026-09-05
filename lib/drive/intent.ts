@@ -3,8 +3,8 @@ import type { DriveSearchIntent } from "./types";
 const DRIVE_CONTEXT_PATTERN =
   /(?:내\s*)?(?:구글\s*)?드라이브|google\s*drive/iu;
 
-const FILE_SEARCH_CONTEXT_PATTERN =
-  /(?:파일|문서).*(?:찾아|검색|보여|있어|알려|요약)/u;
+const FILE_CONTEXT_PATTERN =
+  /(?:파일|문서|pdf|드라이브)/iu;
 
 const RECENT_FILE_PATTERN =
   /(?:최근|최근에|최신).*(?:수정|업데이트|파일|문서)|(?:최근\s*수정한?\s*(?:파일|문서))/u;
@@ -12,8 +12,8 @@ const RECENT_FILE_PATTERN =
 const SUMMARY_PATTERN =
   /(?:요약해\s*줘|요약해줘|요약\s*해줘|요약해|요약|내용\s*요약|정리해\s*줘|정리해줘)/u;
 
-const QUESTION_PATTERN =
-  /(?:찾아서|찾고|열어서|읽어서).*(?:알려\s*줘|알려줘|말해\s*줘|말해줘|뭐야|어때|언제야|누구야|어디야)/u;
+const QUESTION_END_PATTERN =
+  /(?:알려\s*줘|알려줘|말해\s*줘|말해줘|뽑아\s*줘|뽑아줘|정리해\s*줘|정리해줘|찾아\s*줘|찾아줘|뭐야|언제야|누구야|어디야|어때|있어)/u;
 
 const SEARCH_COMMAND_PATTERN =
   /\s*(?:찾아\s*줘|찾아줘|검색해\s*줘|검색해줘|보여\s*줘|보여줘|있어)\s*[?.!。！？]*$/u;
@@ -24,7 +24,8 @@ const SUMMARY_COMMAND_PATTERN =
 function removeDriveContext(message: string) {
   return message
     .replace(/(?:내\s*)?(?:구글\s*)?드라이브|google\s*drive/giu, " ")
-    .replace(/^\s*(?:에서|에)\s*/u, "")
+    .replace(/^\s*(?:에서|에|있는)\s*/u, "")
+    .replace(/\s+/gu, " ")
     .trim();
 }
 
@@ -38,30 +39,60 @@ function cleanDriveQuery(message: string) {
     .trim();
 }
 
+function normalizeFileQuery(query: string) {
+  return query
+    .replace(/\s*(?:파일|문서)\s*$/u, "")
+    .replace(/^[\s'"]+|[\s?'".!。！？]+$/gu, "")
+    .trim();
+}
+
 function parseDriveQuestion(message: string) {
   const cleaned = removeDriveContext(message);
 
-  const match = cleaned.match(
-    /^(.+?\.(?:pdf|txt|xlsx|csv|docx|pptx))\s*(?:파일을?\s*)?(?:찾아서|찾고|열어서|읽어서)\s*(.+)$/iu,
-  );
+  // 예:
+  // 대의원회의.pdf 찾아서 1월 7일 일정만 알려줘
+  // 대의원회의 문서에서 2학년 일정만 알려줘
+  // 대의원회의 파일에서 중요한 날짜만 뽑아줘
+  // 대의원회의에서 체육대회 관련 내용 알려줘
 
-  if (!match) {
-    return null;
+  const patterns = [
+    /^(.+?\.(?:pdf|txt|xlsx|csv|docx|pptx))\s*(?:파일을?\s*)?(?:찾아서|찾고|열어서|읽어서|에서)\s*(.+)$/iu,
+
+    /^(.+?)\s+(?:파일|문서)(?:에서|을\s*찾아서|를\s*찾아서|에서\s*)\s*(.+)$/iu,
+
+    /^(.+?)(?:에서)\s+(.+)$/iu,
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+
+    if (!match) continue;
+
+    const query = normalizeFileQuery(match[1]);
+    const question = match[2].trim();
+
+    if (!query || !question) continue;
+
+    if (!QUESTION_END_PATTERN.test(question) && question.length < 3) {
+      continue;
+    }
+
+    return {
+      query,
+      question,
+    };
   }
 
-  return {
-    query: match[1].trim(),
-    question: match[2].trim(),
-  };
+  return null;
 }
 
 export function parseDriveSearchIntent(
   message: string,
 ): DriveSearchIntent | null {
   const hasDriveContext = DRIVE_CONTEXT_PATTERN.test(message);
-  const hasFileSearchContext = FILE_SEARCH_CONTEXT_PATTERN.test(message);
+  const hasFileContext = FILE_CONTEXT_PATTERN.test(message);
 
-  if (!hasDriveContext && !hasFileSearchContext) {
+  if (!hasDriveContext && !hasFileContext) {
     return null;
   }
 
@@ -79,21 +110,19 @@ export function parseDriveSearchIntent(
       action: "summarize",
       query:
         query && query !== "파일" && query !== "문서"
-          ? query
+          ? normalizeFileQuery(query)
           : null,
     };
   }
 
-  if (QUESTION_PATTERN.test(message)) {
-    const parsed = parseDriveQuestion(message);
+  const question = parseDriveQuestion(message);
 
-    if (parsed) {
-      return {
-        action: "ask",
-        query: parsed.query,
-        question: parsed.question,
-      };
-    }
+  if (question) {
+    return {
+      action: "ask",
+      query: question.query,
+      question: question.question,
+    };
   }
 
   const query = cleanDriveQuery(message);
@@ -102,7 +131,7 @@ export function parseDriveSearchIntent(
     action: "search",
     query:
       query && query !== "파일" && query !== "문서"
-        ? query
+        ? normalizeFileQuery(query)
         : null,
   };
 }

@@ -663,7 +663,11 @@ if (driveIntent) {
       );
     }
 
-    const file = files[0];
+    const file =
+      files.find((item) =>
+        item.name.toLowerCase().endsWith(".pdf"),
+      ) ?? files[0];
+
     const text = await readGoogleDriveFile(file.id);
 
     if (!text) {
@@ -696,7 +700,11 @@ if (driveIntent) {
       );
     }
 
-    const file = files[0];
+    const file =
+      files.find((item) =>
+        item.name.toLowerCase().endsWith(".pdf"),
+      ) ?? files[0];
+
     const text = await readGoogleDriveFile(file.id);
 
     if (!text) {
