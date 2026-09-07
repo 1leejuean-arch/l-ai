@@ -137,3 +137,61 @@ ${trimmedText}
 
   return answer;
 }
+export async function compareDriveFiles(
+  firstFileName: string,
+  firstText: string,
+  secondFileName: string,
+  secondText: string,
+  compareQuestion?: string | null,
+) {
+  const openai = getOpenAIClient();
+
+  const firstTrimmed = firstText.slice(0, 25_000);
+  const secondTrimmed = secondText.slice(0, 25_000);
+
+  const response = await openai.responses.create({
+    model: getOpenAIModel(),
+    instructions: `
+너는 L-AI의 Google Drive 문서 비교 기능이다.
+
+사용자가 Google Drive의 두 파일을 비교해달라고 하면,
+두 파일의 실제 내용만 근거로 공통점과 차이점을 정리해야 한다.
+
+규칙:
+- 두 파일의 핵심 목적을 먼저 짧게 설명한다.
+- 공통점과 차이점을 구분해서 정리한다.
+- 날짜, 일정, 담당자, 장소, 해야 할 일, 수치 등 중요한 차이를 놓치지 않는다.
+- 한쪽 파일에만 있는 내용은 명확히 구분한다.
+- 문서에 없는 내용은 추측하지 않는다.
+- 표나 슬라이드에서 추출된 텍스트 구조가 불명확하면 단정하지 않는다.
+- 비교 질문이 있으면 그 질문을 우선해서 비교한다.
+- 답변은 자연스러운 한국어로 작성한다.
+`,
+    input: `
+첫 번째 파일명: ${firstFileName}
+
+--- 첫 번째 파일 내용 ---
+${firstTrimmed}
+--- 첫 번째 파일 끝 ---
+
+두 번째 파일명: ${secondFileName}
+
+--- 두 번째 파일 내용 ---
+${secondTrimmed}
+--- 두 번째 파일 끝 ---
+
+사용자 비교 요청:
+${compareQuestion || "두 파일의 핵심 내용과 차이점을 비교해줘."}
+
+두 파일을 비교해서 정리해줘.
+`,
+  });
+
+  const answer = response.output_text.trim();
+
+  if (!answer) {
+    throw new Error("OpenAI returned an empty Drive comparison");
+  }
+
+  return answer;
+}

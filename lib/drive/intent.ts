@@ -4,13 +4,16 @@ const DRIVE_CONTEXT_PATTERN =
   /(?:내\s*)?(?:구글\s*)?드라이브|google\s*drive/iu;
 
 const FILE_CONTEXT_PATTERN =
-  /(?:파일|문서|pdf|드라이브)/iu;
+  /(?:파일|문서|pdf|pptx|docx|xlsx|드라이브)/iu;
 
 const RECENT_FILE_PATTERN =
   /(?:최근|최근에|최신).*(?:수정|업데이트|파일|문서)|(?:최근\s*수정한?\s*(?:파일|문서))/u;
 
 const SUMMARY_PATTERN =
-  /(?:요약해\s*줘|요약해줘|요약\s*해줘|요약해|요약|내용\s*요약|정리해\s*줘|정리해줘)/u;
+  /(?:요약해\s*줘|요약해줘|요약\s*해줘|요약해|요약|내용\s*요약)/u;
+
+const COMPARE_PATTERN =
+  /(?:비교해\s*줘|비교해줘|비교해|차이점|차이\s*알려|차이\s*정리)/u;
 
 const QUESTION_END_PATTERN =
   /(?:알려\s*줘|알려줘|말해\s*줘|말해줘|뽑아\s*줘|뽑아줘|정리해\s*줘|정리해줘|찾아\s*줘|찾아줘|뭐야|언제야|누구야|어디야|어때|있어)/u;
@@ -19,13 +22,20 @@ const SEARCH_COMMAND_PATTERN =
   /\s*(?:찾아\s*줘|찾아줘|검색해\s*줘|검색해줘|보여\s*줘|보여줘|있어)\s*[?.!。！？]*$/u;
 
 const SUMMARY_COMMAND_PATTERN =
-  /\s*(?:찾아서\s*)?(?:내용을?\s*)?(?:요약해\s*줘|요약해줘|요약\s*해줘|요약해|요약|정리해\s*줘|정리해줘)\s*[?.!。！？]*$/u;
+  /\s*(?:찾아서\s*)?(?:내용을?\s*)?(?:요약해\s*줘|요약해줘|요약\s*해줘|요약해|요약)\s*[?.!。！？]*$/u;
 
 function removeDriveContext(message: string) {
   return message
     .replace(/(?:내\s*)?(?:구글\s*)?드라이브|google\s*drive/giu, " ")
     .replace(/^\s*(?:에서|에|있는)\s*/u, "")
     .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function normalizeFileQuery(query: string) {
+  return query
+    .replace(/\s*(?:파일|문서)\s*$/u, "")
+    .replace(/^[\s'"]+|[\s?'".!。！？]+$/gu, "")
     .trim();
 }
 
@@ -39,21 +49,43 @@ function cleanDriveQuery(message: string) {
     .trim();
 }
 
-function normalizeFileQuery(query: string) {
-  return query
-    .replace(/\s*(?:파일|문서)\s*$/u, "")
-    .replace(/^[\s'"]+|[\s?'".!。！？]+$/gu, "")
+function parseDriveCompare(message: string) {
+  if (!COMPARE_PATTERN.test(message)) {
+    return null;
+  }
+
+  let cleaned = removeDriveContext(message);
+
+  cleaned = cleaned
+    .replace(
+      /\s*(?:두\s*(?:파일|문서)(?:을|를)?\s*)?(?:비교해\s*줘|비교해줘|비교해|차이점(?:을)?\s*알려\s*줘|차이\s*알려\s*줘|차이\s*정리해\s*줘)\s*[?.!。！？]*$/u,
+      "",
+    )
     .trim();
+
+  const match = cleaned.match(
+    /^(.+?)\s*(?:랑|이랑|와|과|하고|그리고|vs\.?|VS)\s*(.+)$/u,
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  const first = normalizeFileQuery(match[1]);
+  const second = normalizeFileQuery(match[2]);
+
+  if (!first || !second) {
+    return null;
+  }
+
+  return {
+    queries: [first, second],
+    compareQuestion: "두 파일의 핵심 내용과 차이점을 비교해줘.",
+  };
 }
 
 function parseDriveQuestion(message: string) {
   const cleaned = removeDriveContext(message);
-
-  // 예:
-  // 대의원회의.pdf 찾아서 1월 7일 일정만 알려줘
-  // 대의원회의 문서에서 2학년 일정만 알려줘
-  // 대의원회의 파일에서 중요한 날짜만 뽑아줘
-  // 대의원회의에서 체육대회 관련 내용 알려줘
 
   const patterns = [
     /^(.+?\.(?:pdf|txt|xlsx|csv|docx|pptx))\s*(?:파일을?\s*)?(?:찾아서|찾고|열어서|읽어서|에서)\s*(.+)$/iu,
@@ -100,6 +132,17 @@ export function parseDriveSearchIntent(
     return {
       action: "recent",
       query: null,
+    };
+  }
+
+  const compare = parseDriveCompare(message);
+
+  if (compare) {
+    return {
+      action: "compare",
+      query: null,
+      queries: compare.queries,
+      compareQuestion: compare.compareQuestion,
     };
   }
 

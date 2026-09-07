@@ -1,6 +1,7 @@
 import type { ChatApiError, ChatApiResponse } from "@/app/types/chat";
 import {
   answerDriveFileQuestion,
+  compareDriveFiles,
   generateAssistantReply,
   summarizeDriveFile,
   OpenAIConfigurationError,
@@ -644,10 +645,109 @@ async function handleChatRequest(request: Request, sessionId: string) {
  const driveIntent = parseDriveSearchIntent(message);
 
 if (driveIntent) {
+  const selectDriveFile = (
+    files: Awaited<ReturnType<typeof searchGoogleDrive>>,
+    query: string,
+  ) => {
+    const normalizedQuery = query.toLowerCase().trim();
+
+    // 사용자가 정확한 파일명을 입력했으면 그 파일을 최우선으로 선택
+    const exactMatch = files.find(
+      (file) => file.name.toLowerCase() === normalizedQuery,
+    );
+
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    // 검색어와 파일명이 거의 동일한 경우
+    const partialMatch = files.find((file) =>
+      file.name.toLowerCase().includes(normalizedQuery),
+    );
+
+    if (partialMatch) {
+      return partialMatch;
+    }
+
+    // 확장자를 안 쓴 경우에는 기존처럼 PDF를 우선
+    const pdfFile = files.find((file) =>
+      file.name.toLowerCase().endsWith(".pdf"),
+    );
+
+    return pdfFile ?? files[0];
+  };
+
   if (driveIntent.action === "recent") {
     const files = await getRecentGoogleDriveFiles();
 
     return chatReply(formatRecentDriveFiles(files));
+  }
+
+  if (driveIntent.action === "compare") {
+    const queries = driveIntent.queries;
+
+    if (!queries || queries.length < 2) {
+      return chatReply("비교할 두 파일을 알려줘.");
+    }
+
+    const [firstQuery, secondQuery] = queries;
+
+    const [firstFiles, secondFiles] = await Promise.all([
+      searchGoogleDrive(firstQuery),
+      searchGoogleDrive(secondQuery),
+    ]);
+
+    if (firstFiles.length === 0) {
+      return chatReply(
+        `Google Drive에서 '${firstQuery}' 파일을 찾지 못했어.`,
+      );
+    }
+
+    if (secondFiles.length === 0) {
+      return chatReply(
+        `Google Drive에서 '${secondQuery}' 파일을 찾지 못했어.`,
+      );
+    }
+
+    const firstFile = selectDriveFile(firstFiles, firstQuery);
+    const secondFile = selectDriveFile(secondFiles, secondQuery);
+
+    const [firstText, secondText] = await Promise.all([
+      readGoogleDriveFile(firstFile.id),
+      readGoogleDriveFile(secondFile.id),
+    ]);
+
+    if (!firstText) {
+      return chatReply(
+        `'${firstFile.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+      );
+    }
+
+    if (!secondText) {
+      return chatReply(
+        `'${secondFile.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+      );
+    }
+
+    const comparison = await compareDriveFiles(
+      firstFile.name,
+      firstText,
+      secondFile.name,
+      secondText,
+      driveIntent.compareQuestion,
+    );
+
+    const firstUrl =
+      firstFile.webViewLink ||
+      `https://drive.google.com/open?id=${encodeURIComponent(firstFile.id)}`;
+
+    const secondUrl =
+      secondFile.webViewLink ||
+      `https://drive.google.com/open?id=${encodeURIComponent(secondFile.id)}`;
+
+    return chatReply(
+      `**${firstFile.name} ↔ ${secondFile.name} 비교**\n\n${comparison}\n\n[첫 번째 파일 열기](${firstUrl}) · [두 번째 파일 열기](${secondUrl})`,
+    );
   }
 
   if (driveIntent.action === "summarize") {
@@ -663,11 +763,7 @@ if (driveIntent) {
       );
     }
 
-    const file =
-      files.find((item) =>
-        item.name.toLowerCase().endsWith(".pdf"),
-      ) ?? files[0];
-
+    const file = selectDriveFile(files, driveIntent.query);
     const text = await readGoogleDriveFile(file.id);
 
     if (!text) {
@@ -700,11 +796,7 @@ if (driveIntent) {
       );
     }
 
-    const file =
-      files.find((item) =>
-        item.name.toLowerCase().endsWith(".pdf"),
-      ) ?? files[0];
-
+    const file = selectDriveFile(files, driveIntent.query);
     const text = await readGoogleDriveFile(file.id);
 
     if (!text) {
