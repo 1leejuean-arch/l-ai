@@ -63,11 +63,21 @@ export function Chat() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message }),
-      });
+      let sessionId = sessionStorage.getItem("l-ai-session-id");
+
+if (!sessionId) {
+  sessionId = crypto.randomUUID();
+  sessionStorage.setItem("l-ai-session-id", sessionId);
+}
+
+const response = await fetch("/api/chat", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-session-id": sessionId,
+  },
+  body: JSON.stringify({ message }),
+});
       const data: unknown = await response.json();
 
       if (!response.ok) {

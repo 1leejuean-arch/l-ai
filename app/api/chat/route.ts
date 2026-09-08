@@ -1,3 +1,8 @@
+import {
+  getDriveContext,
+  isDriveContextFollowUp,
+  saveDriveContext,
+} from "@/lib/drive/context";
 import type {
   ChatApiError,
   ChatApiResponse,
@@ -646,7 +651,38 @@ async function handleChatRequest(request: Request, sessionId: string) {
   ) {
     return chatReply("확인할 일정 작업이 없습니다.");
   }
+const savedDriveContext = getDriveContext(sessionId);
 
+if (
+  savedDriveContext &&
+  isDriveContextFollowUp(message)
+) {
+  const text = await readGoogleDriveFile(
+    savedDriveContext.fileId,
+  );
+
+  if (!text) {
+    return chatReply(
+      `'${savedDriveContext.fileName}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+    );
+  }
+
+  const answer = await answerDriveFileQuestion(
+    savedDriveContext.fileName,
+    text,
+    message,
+  );
+
+  const fileUrl =
+    savedDriveContext.webViewLink ||
+    `https://drive.google.com/open?id=${encodeURIComponent(
+      savedDriveContext.fileId,
+    )}`;
+
+  return chatReply(
+    `**${savedDriveContext.fileName}에서 이어서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
+  );
+}
  const driveIntent = parseDriveSearchIntent(message);
 
 if (driveIntent) {
@@ -824,6 +860,11 @@ if (driveIntent) {
     }
 
     const file = selectDriveFile(files, driveIntent.query);
+    saveDriveContext(sessionId, {
+  fileId: file.id,
+  fileName: file.name,
+  webViewLink: file.webViewLink,
+});
     const text = await readGoogleDriveFile(file.id);
 
     if (!text) {
@@ -857,6 +898,11 @@ if (driveIntent) {
     }
 
     const file = selectDriveFile(files, driveIntent.query);
+    saveDriveContext(sessionId, {
+  fileId: file.id,
+  fileName: file.name,
+  webViewLink: file.webViewLink,
+});
     const text = await readGoogleDriveFile(file.id);
 
     if (!text) {
