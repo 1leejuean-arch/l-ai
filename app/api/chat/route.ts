@@ -1,6 +1,11 @@
-import type { ChatApiError, ChatApiResponse } from "@/app/types/chat";
+import type {
+  ChatApiError,
+  ChatApiResponse,
+} from "@/app/types/chat";
+
 import {
   answerDriveFileQuestion,
+  combineDriveFiles,
   compareDriveFiles,
   generateAssistantReply,
   summarizeDriveFile,
@@ -651,7 +656,6 @@ if (driveIntent) {
   ) => {
     const normalizedQuery = query.toLowerCase().trim();
 
-    // 사용자가 정확한 파일명을 입력했으면 그 파일을 최우선으로 선택
     const exactMatch = files.find(
       (file) => file.name.toLowerCase() === normalizedQuery,
     );
@@ -660,7 +664,6 @@ if (driveIntent) {
       return exactMatch;
     }
 
-    // 검색어와 파일명이 거의 동일한 경우
     const partialMatch = files.find((file) =>
       file.name.toLowerCase().includes(normalizedQuery),
     );
@@ -669,7 +672,6 @@ if (driveIntent) {
       return partialMatch;
     }
 
-    // 확장자를 안 쓴 경우에는 기존처럼 PDF를 우선
     const pdfFile = files.find((file) =>
       file.name.toLowerCase().endsWith(".pdf"),
     );
@@ -681,6 +683,64 @@ if (driveIntent) {
     const files = await getRecentGoogleDriveFiles();
 
     return chatReply(formatRecentDriveFiles(files));
+  }
+
+  if (driveIntent.action === "combine") {
+    const queries = driveIntent.queries;
+
+    if (!queries || queries.length < 2) {
+      return chatReply("종합할 파일을 2개 이상 알려줘.");
+    }
+
+    const searchResults = await Promise.all(
+      queries.map((query) => searchGoogleDrive(query)),
+    );
+
+    for (let index = 0; index < searchResults.length; index += 1) {
+      if (searchResults[index].length === 0) {
+        return chatReply(
+          `Google Drive에서 '${queries[index]}' 파일을 찾지 못했어.`,
+        );
+      }
+    }
+
+    const selectedFiles = searchResults.map((files, index) =>
+      selectDriveFile(files, queries[index]),
+    );
+
+    const texts = await Promise.all(
+      selectedFiles.map((file) => readGoogleDriveFile(file.id)),
+    );
+
+    for (let index = 0; index < texts.length; index += 1) {
+      if (!texts[index]) {
+        return chatReply(
+          `'${selectedFiles[index].name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+        );
+      }
+    }
+
+    const combined = await combineDriveFiles(
+      selectedFiles.map((file, index) => ({
+        name: file.name,
+        text: texts[index],
+      })),
+      driveIntent.combineQuestion,
+    );
+
+    const links = selectedFiles
+      .map((file, index) => {
+        const fileUrl =
+          file.webViewLink ||
+          `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+
+        return `[파일 ${index + 1} 열기 - ${file.name}](${fileUrl})`;
+      })
+      .join(" · ");
+
+    return chatReply(
+      `**${selectedFiles.length}개 파일 종합 결과**\n\n${combined}\n\n${links}`,
+    );
   }
 
   if (driveIntent.action === "compare") {

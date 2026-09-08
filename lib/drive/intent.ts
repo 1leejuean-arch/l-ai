@@ -15,6 +15,9 @@ const SUMMARY_PATTERN =
 const COMPARE_PATTERN =
   /(?:비교해\s*줘|비교해줘|비교해|차이점|차이\s*알려|차이\s*정리)/u;
 
+const COMBINE_PATTERN =
+  /(?:같이\s*읽|한꺼번에\s*읽|모아서|종합해|종합\s*해|합쳐서|통합해서|전체\s*읽)/u;
+
 const QUESTION_END_PATTERN =
   /(?:알려\s*줘|알려줘|말해\s*줘|말해줘|뽑아\s*줘|뽑아줘|정리해\s*줘|정리해줘|찾아\s*줘|찾아줘|뭐야|언제야|누구야|어디야|어때|있어)/u;
 
@@ -34,8 +37,9 @@ function removeDriveContext(message: string) {
 
 function normalizeFileQuery(query: string) {
   return query
+    .replace(/^\s*(?:에서|에)\s*/u, "")
     .replace(/\s*(?:파일|문서)\s*$/u, "")
-    .replace(/^[\s'"]+|[\s?'".!。！？]+$/gu, "")
+    .replace(/^[\s,'"]+|[\s,?'".!。！？]+$/gu, "")
     .trim();
 }
 
@@ -49,9 +53,32 @@ function cleanDriveQuery(message: string) {
     .trim();
 }
 
+function extractExplicitFileNames(message: string) {
+  const cleaned = removeDriveContext(message);
+
+  const matches = cleaned.match(
+    /[^,\s]+?\.(?:pdf|pptx|docx|xlsx|csv|txt)/giu,
+  );
+
+  if (!matches) {
+    return [];
+  }
+
+  return [...new Set(matches.map((name) => normalizeFileQuery(name)))];
+}
+
 function parseDriveCompare(message: string) {
   if (!COMPARE_PATTERN.test(message)) {
     return null;
+  }
+
+  const explicitFiles = extractExplicitFileNames(message);
+
+  if (explicitFiles.length >= 2) {
+    return {
+      queries: explicitFiles.slice(0, 2),
+      compareQuestion: "두 파일의 핵심 내용과 차이점을 비교해줘.",
+    };
   }
 
   let cleaned = removeDriveContext(message);
@@ -84,6 +111,39 @@ function parseDriveCompare(message: string) {
   };
 }
 
+function parseDriveCombine(message: string) {
+  const explicitFiles = extractExplicitFileNames(message);
+
+  const wantsCombine =
+    COMBINE_PATTERN.test(message) ||
+    explicitFiles.length >= 3;
+
+  if (!wantsCombine || explicitFiles.length < 2) {
+    return null;
+  }
+
+  let combineQuestion = "여러 파일의 핵심 내용을 하나로 종합해서 정리해줘.";
+
+  if (/일정/u.test(message)) {
+    combineQuestion =
+      "여러 파일에서 일정, 날짜, 행사, 해야 할 일을 모아서 하나로 종합해줘.";
+  } else if (/담당자|누가|인물/u.test(message)) {
+    combineQuestion =
+      "여러 파일에서 담당자와 역할 관련 내용을 모아서 정리해줘.";
+  } else if (/차이|비교/u.test(message)) {
+    combineQuestion =
+      "여러 파일의 공통점과 차이점을 함께 정리해줘.";
+  } else if (/중요|핵심/u.test(message)) {
+    combineQuestion =
+      "여러 파일에서 가장 중요한 핵심 내용만 모아서 정리해줘.";
+  }
+
+  return {
+    queries: explicitFiles,
+    combineQuestion,
+  };
+}
+
 function parseDriveQuestion(message: string) {
   const cleaned = removeDriveContext(message);
 
@@ -105,7 +165,10 @@ function parseDriveQuestion(message: string) {
 
     if (!query || !question) continue;
 
-    if (!QUESTION_END_PATTERN.test(question) && question.length < 3) {
+    if (
+      !QUESTION_END_PATTERN.test(question) &&
+      question.length < 3
+    ) {
       continue;
     }
 
@@ -121,8 +184,11 @@ function parseDriveQuestion(message: string) {
 export function parseDriveSearchIntent(
   message: string,
 ): DriveSearchIntent | null {
-  const hasDriveContext = DRIVE_CONTEXT_PATTERN.test(message);
-  const hasFileContext = FILE_CONTEXT_PATTERN.test(message);
+  const hasDriveContext =
+    DRIVE_CONTEXT_PATTERN.test(message);
+
+  const hasFileContext =
+    FILE_CONTEXT_PATTERN.test(message);
 
   if (!hasDriveContext && !hasFileContext) {
     return null;
@@ -135,6 +201,19 @@ export function parseDriveSearchIntent(
     };
   }
 
+  // 여러 파일 종합
+  const combine = parseDriveCombine(message);
+
+  if (combine) {
+    return {
+      action: "combine",
+      query: null,
+      queries: combine.queries,
+      combineQuestion: combine.combineQuestion,
+    };
+  }
+
+  // 두 파일 비교
   const compare = parseDriveCompare(message);
 
   if (compare) {
@@ -152,7 +231,9 @@ export function parseDriveSearchIntent(
     return {
       action: "summarize",
       query:
-        query && query !== "파일" && query !== "문서"
+        query &&
+        query !== "파일" &&
+        query !== "문서"
           ? normalizeFileQuery(query)
           : null,
     };
@@ -173,7 +254,9 @@ export function parseDriveSearchIntent(
   return {
     action: "search",
     query:
-      query && query !== "파일" && query !== "문서"
+      query &&
+      query !== "파일" &&
+      query !== "문서"
         ? normalizeFileQuery(query)
         : null,
   };

@@ -10,18 +10,23 @@ export type DriveAction =
   | "recent"
   | "summarize"
   | "ask"
-  | "compare";
+  | "compare"
+  | "combine";
 
 export type DriveSearchIntent = {
   action: DriveAction;
 
-  // search / summarize / ask
   query: string | null;
 
   // ask
   question?: string | null;
 
-  // compare
+  // compare / combine
   queries?: string[] | null;
+
+  // compare
   compareQuestion?: string | null;
+
+  // combine
+  combineQuestion?: string | null;
 };

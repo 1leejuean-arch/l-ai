@@ -195,3 +195,70 @@ ${compareQuestion || "두 파일의 핵심 내용과 차이점을 비교해줘."
 
   return answer;
 }
+export async function combineDriveFiles(
+  files: Array<{
+    name: string;
+    text: string;
+  }>,
+  combineQuestion?: string | null,
+) {
+  const openai = getOpenAIClient();
+
+  const documents = files
+    .map((file, index) => {
+      const trimmedText = file.text.slice(0, 20_000);
+
+      return `
+[문서 ${index + 1}]
+파일명: ${file.name}
+
+--- 내용 시작 ---
+${trimmedText}
+--- 내용 끝 ---
+`;
+    })
+    .join("\n");
+
+  const response = await openai.responses.create({
+    model: getOpenAIModel(),
+    instructions: `
+너는 L-AI의 Google Drive 다중 문서 종합 기능이다.
+
+사용자가 여러 개의 Google Drive 파일을 한꺼번에 읽고
+내용을 합쳐서 정리해달라고 요청하면,
+각 문서의 실제 내용만 근거로 하나의 통합된 답변을 만들어야 한다.
+
+규칙:
+- 파일별 내용을 단순히 따로 요약하는 데 그치지 말고 서로 연결해서 정리한다.
+- 같은 내용이 여러 파일에 반복되면 중복해서 길게 쓰지 않는다.
+- 날짜, 일정, 행사, 담당자, 장소, 해야 할 일 등 중요한 정보를 빠뜨리지 않는다.
+- 서로 충돌하는 정보가 있으면 어느 파일에 어떤 내용이 있는지 구분한다.
+- 특정 파일에만 있는 정보는 해당 파일명을 함께 알려준다.
+- 문서에 없는 내용은 추측하지 않는다.
+- 표, 슬라이드, 스프레드시트에서 추출된 텍스트 구조가 불명확할 수 있으므로 확실하지 않은 내용은 단정하지 않는다.
+- 사용자의 종합 요청이 있으면 그 요청을 최우선으로 따른다.
+- 답변은 자연스러운 한국어로 작성한다.
+`,
+    input: `
+아래는 Google Drive에서 읽은 여러 파일의 내용이다.
+
+${documents}
+
+사용자 요청:
+${
+  combineQuestion ||
+  "여러 파일의 핵심 내용을 하나로 종합해서 정리해줘."
+}
+
+위 여러 파일의 내용을 하나의 통합된 답변으로 정리해줘.
+`,
+  });
+
+  const answer = response.output_text.trim();
+
+  if (!answer) {
+    throw new Error("OpenAI returned an empty Drive combination");
+  }
+
+  return answer;
+}
