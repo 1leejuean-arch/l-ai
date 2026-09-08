@@ -1,4 +1,25 @@
 import {
+  clearPendingDriveCalendar,
+  getPendingDriveCalendar,
+  setPendingDriveCalendar,
+} from "@/lib/drive/calendar-pending";
+
+import {
+  driveCandidateToCalendarEvent,
+  getCalendarCheckRange,
+  isDuplicateCalendarEvent,
+  parseDriveCalendarAddCommand,
+} from "@/lib/drive/calendar-register";
+import {
+  extractCalendarEventsFromDriveFile,
+  formatDriveCalendarCandidates,
+} from "@/lib/drive/calendar-extract";
+
+import {
+  parseDriveCalendarCommand,
+} from "@/lib/drive/calendar-command";
+
+import {
   getDriveContext,
   isDriveContextFollowUp,
   saveDriveContext,
@@ -635,6 +656,157 @@ async function handleChatRequest(request: Request, sessionId: string) {
     return chatReply(expectedApprovalMessage(pending));
   }
 
+  const pendingDriveCalendar =
+  getPendingDriveCalendar(sessionId);
+
+const driveCalendarAddCommand =
+  parseDriveCalendarAddCommand(message);
+
+if (
+  !pending &&
+  pendingDriveCalendar &&
+  driveCalendarAddCommand
+) {
+  let selectedEvents =
+    pendingDriveCalendar.events;
+
+  if (
+    driveCalendarAddCommand.kind ===
+    "one"
+  ) {
+    const selected =
+      pendingDriveCalendar.events[
+        driveCalendarAddCommand.index
+      ];
+
+    if (!selected) {
+      return chatReply(
+        `선택할 수 있는 일정은 1번부터 ${pendingDriveCalendar.events.length}번까지야.`,
+      );
+    }
+
+    selectedEvents = [selected];
+  }
+
+  const added: string[] = [];
+  const duplicates: string[] = [];
+  const failed: string[] = [];
+
+  for (
+    const candidate of selectedEvents
+  ) {
+    const calendarEvent =
+      driveCandidateToCalendarEvent(
+        candidate,
+      );
+
+    try {
+      const range =
+        getCalendarCheckRange(
+          calendarEvent,
+        );
+
+      const existingEvents =
+        await callCalendarN8n(
+          "calendar_get",
+          range,
+        );
+
+      if (
+        isDuplicateCalendarEvent(
+          calendarEvent,
+          existingEvents,
+        )
+      ) {
+        duplicates.push(
+          calendarEvent.title,
+        );
+
+        continue;
+      }
+
+      await callCalendarN8n(
+        "calendar_create",
+        calendarEvent,
+      );
+
+      added.push(
+        calendarEvent.title,
+      );
+    } catch (error) {
+      console.error(
+        "[Drive Calendar] Failed to create event:",
+        candidate.title,
+        error,
+      );
+
+      failed.push(
+        candidate.title,
+      );
+    }
+  }
+
+  if (
+    driveCalendarAddCommand.kind ===
+      "all" ||
+    pendingDriveCalendar.events.length ===
+      1
+  ) {
+    clearPendingDriveCalendar(
+      sessionId,
+    );
+  }
+
+  const result: string[] = [];
+
+  if (added.length > 0) {
+    result.push(
+      `**${added.length}개의 일정을 Calendar에 추가했어 ✅**`,
+      "",
+      ...added.map(
+        (title) => `- ${title}`,
+      ),
+    );
+  }
+
+  if (duplicates.length > 0) {
+    if (result.length > 0) {
+      result.push("");
+    }
+
+    result.push(
+      `**이미 등록되어 있어서 건너뛴 일정 ${duplicates.length}개**`,
+      "",
+      ...duplicates.map(
+        (title) => `- ${title}`,
+      ),
+    );
+  }
+
+  if (failed.length > 0) {
+    if (result.length > 0) {
+      result.push("");
+    }
+
+    result.push(
+      `**등록에 실패한 일정 ${failed.length}개**`,
+      "",
+      ...failed.map(
+        (title) => `- ${title}`,
+      ),
+    );
+  }
+
+  if (result.length === 0) {
+    return chatReply(
+      "추가할 일정이 없었어.",
+    );
+  }
+
+  return chatReply(
+    result.join("\n"),
+  );
+}
   if (pending && isConfirmation(pending)) {
     if (isApprovalForPending(shortReply, pending)) {
       return executePendingAction(sessionId);
@@ -651,7 +823,101 @@ async function handleChatRequest(request: Request, sessionId: string) {
   ) {
     return chatReply("확인할 일정 작업이 없습니다.");
   }
-const savedDriveContext = getDriveContext(sessionId);
+const driveCalendarCommand =
+  parseDriveCalendarCommand(message);
+
+if (driveCalendarCommand) {
+  let fileId: string;
+  let fileName: string;
+  let webViewLink: string | undefined;
+
+  if (driveCalendarCommand.query) {
+    const files = await searchGoogleDrive(
+      driveCalendarCommand.query,
+    );
+
+    if (files.length === 0) {
+      return chatReply(
+        `Google Drive에서 '${driveCalendarCommand.query}' 파일을 찾지 못했어.`,
+      );
+    }
+
+    const normalizedQuery =
+      driveCalendarCommand.query.toLowerCase();
+
+    const file =
+      files.find(
+        (item) =>
+          item.name.toLowerCase() === normalizedQuery,
+      ) ??
+      files.find((item) =>
+        item.name
+          .toLowerCase()
+          .includes(normalizedQuery),
+      ) ??
+      files[0];
+
+    fileId = file.id;
+    fileName = file.name;
+    webViewLink = file.webViewLink;
+
+    saveDriveContext(sessionId, {
+      fileId,
+      fileName,
+      webViewLink,
+    });
+  } else {
+    const context = getDriveContext(sessionId);
+
+    if (!context) {
+      return chatReply(
+        "어떤 Drive 문서에서 일정을 찾을지 파일명을 알려줘.",
+      );
+    }
+
+    fileId = context.fileId;
+    fileName = context.fileName;
+    webViewLink = context.webViewLink;
+  }
+
+  const text = await readGoogleDriveFile(fileId);
+
+  if (!text) {
+    return chatReply(
+      `'${fileName}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+    );
+  }
+
+  const events =
+    await extractCalendarEventsFromDriveFile(
+      fileName,
+      text,
+    );
+
+  if (events.length === 0) {
+    return chatReply(
+      formatDriveCalendarCandidates(
+        fileName,
+        events,
+      ),
+    );
+  }
+
+  setPendingDriveCalendar(sessionId, {
+    fileId,
+    fileName,
+    webViewLink,
+    events,
+  });
+
+  return chatReply(
+    `${formatDriveCalendarCandidates(
+      fileName,
+      events,
+    )}\n\n원하면 **"전부 추가해줘"** 또는 **"1번 추가해줘"**라고 말해줘.`,
+  );
+}
+  const savedDriveContext = getDriveContext(sessionId);
 
 if (
   savedDriveContext &&
