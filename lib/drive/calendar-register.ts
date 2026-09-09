@@ -14,8 +14,8 @@ export type DriveCalendarAddCommand =
       kind: "all";
     }
   | {
-      kind: "one";
-      index: number;
+      kind: "selected";
+      indexes: number[];
     };
 
 export function parseDriveCalendarAddCommand(
@@ -23,7 +23,8 @@ export function parseDriveCalendarAddCommand(
 ): DriveCalendarAddCommand | null {
   const normalized = message
     .trim()
-    .replace(/[.!?。！？]+$/u, "");
+    .replace(/[.!?。！？]+$/u, "")
+    .replace(/\s+/gu, " ");
 
   if (
     /^(?:전부|전체|모두)\s*(?:일정\s*)?(?:추가|등록|넣어)(?:해\s*줘|해줘)?$/u.test(
@@ -35,36 +36,84 @@ export function parseDriveCalendarAddCommand(
     };
   }
 
-  const numberMatch = normalized.match(
-    /^(\d+)\s*번(?:\s*일정)?\s*(?:추가|등록|넣어)(?:해\s*줘|해줘)?$/u,
-  );
-
-  if (numberMatch) {
-    return {
-      kind: "one",
-      index: Number(numberMatch[1]) - 1,
-    };
+  if (
+    !/(?:추가|등록|넣어)/u.test(
+      normalized,
+    )
+  ) {
+    return null;
   }
 
-  return null;
+  const numberMatches =
+    normalized.match(/\d+/gu);
+
+  if (
+    !numberMatches ||
+    numberMatches.length === 0
+  ) {
+    return null;
+  }
+
+  const indexes = [
+    ...new Set(
+      numberMatches.map(
+        (number) =>
+          Number(number) - 1,
+      ),
+    ),
+  ];
+
+  if (
+    indexes.some(
+      (index) =>
+        !Number.isInteger(index) ||
+        index < 0,
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    kind: "selected",
+    indexes,
+  };
 }
 
-function addOneDay(dateString: string) {
+export function isDriveCalendarCancelCommand(
+  message: string,
+) {
+  const normalized = message
+    .trim()
+    .replace(/[.!?。！？]+$/u, "");
+
+  return /^(?:일정\s*)?(?:추가\s*)?(?:취소|취소해\s*줘|취소해줘)$/u.test(
+    normalized,
+  );
+}
+
+function addOneDay(
+  dateString: string,
+) {
   const date = new Date(
     `${dateString}T00:00:00+09:00`,
   );
 
-  date.setDate(date.getDate() + 1);
+  date.setDate(
+    date.getDate() + 1,
+  );
 
-  const year = date.getFullYear();
-  const month = String(
-    date.getMonth() + 1,
-  ).padStart(2, "0");
-  const day = String(
-    date.getDate(),
-  ).padStart(2, "0");
+  const formatter =
+    new Intl.DateTimeFormat(
+      "en-CA",
+      {
+        timeZone: "Asia/Seoul",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      },
+    );
 
-  return `${year}-${month}-${day}`;
+  return formatter.format(date);
 }
 
 export function driveCandidateToCalendarEvent(
@@ -75,32 +124,48 @@ export function driveCandidateToCalendarEvent(
       `${candidate.start}T00:00:00+09:00`;
 
     const endDate =
-      candidate.end ||
-      addOneDay(candidate.start);
-
-    const end =
-      `${endDate}T00:00:00+09:00`;
+      candidate.end &&
+      /^\d{4}-\d{2}-\d{2}$/u.test(
+        candidate.end,
+      )
+        ? candidate.end
+        : addOneDay(
+            candidate.start,
+          );
 
     return {
       title: candidate.title,
       start,
-      end,
+      end:
+        `${endDate}T00:00:00+09:00`,
+      location:
+        candidate.location,
+      description:
+        candidate.description,
     };
   }
 
-  const start = candidate.start;
+  const start =
+    candidate.start;
 
-  let end = candidate.end;
+  let end =
+    candidate.end;
 
   if (!end) {
-    const startDate = new Date(start);
+    const startDate =
+      new Date(start);
 
-    if (!Number.isNaN(startDate.getTime())) {
+    if (
+      !Number.isNaN(
+        startDate.getTime(),
+      )
+    ) {
       startDate.setHours(
         startDate.getHours() + 1,
       );
 
-      end = startDate.toISOString();
+      end =
+        startDate.toISOString();
     }
   }
 
@@ -108,10 +173,16 @@ export function driveCandidateToCalendarEvent(
     title: candidate.title,
     start,
     end: end || start,
+    location:
+      candidate.location,
+    description:
+      candidate.description,
   };
 }
 
-function normalizeTitle(title: string) {
+function normalizeTitle(
+  title: string,
+) {
   return title
     .replace(/\s+/gu, "")
     .toLowerCase()
@@ -122,15 +193,25 @@ function getGoogleEventStart(
   event: GoogleCalendarEvent,
 ) {
   if (event.start.dateTime) {
-    return new Date(
-      event.start.dateTime,
-    ).getTime();
+    const timestamp =
+      new Date(
+        event.start.dateTime,
+      ).getTime();
+
+    return Number.isNaN(timestamp)
+      ? null
+      : timestamp;
   }
 
   if (event.start.date) {
-    return new Date(
-      `${event.start.date}T00:00:00+09:00`,
-    ).getTime();
+    const timestamp =
+      new Date(
+        `${event.start.date}T00:00:00+09:00`,
+      ).getTime();
+
+    return Number.isNaN(timestamp)
+      ? null
+      : timestamp;
   }
 
   return null;
@@ -144,7 +225,9 @@ export function isDuplicateCalendarEvent(
     normalizeTitle(target.title);
 
   const targetStart =
-    new Date(target.start).getTime();
+    new Date(
+      target.start,
+    ).getTime();
 
   if (
     Number.isNaN(targetStart)
@@ -152,27 +235,35 @@ export function isDuplicateCalendarEvent(
     return false;
   }
 
-  return existingEvents.some((event) => {
-    const eventTitle =
-      normalizeTitle(
-        event.summary || "",
+  return existingEvents.some(
+    (event) => {
+      const eventTitle =
+        normalizeTitle(
+          event.summary || "",
+        );
+
+      const eventStart =
+        getGoogleEventStart(
+          event,
+        );
+
+      if (
+        eventStart === null
+      ) {
+        return false;
+      }
+
+      return (
+        eventTitle ===
+          targetTitle &&
+        Math.abs(
+          eventStart -
+            targetStart,
+        ) <
+          1000 * 60
       );
-
-    const eventStart =
-      getGoogleEventStart(event);
-
-    if (eventStart === null) {
-      return false;
-    }
-
-    return (
-      eventTitle === targetTitle &&
-      Math.abs(
-        eventStart - targetStart,
-      ) <
-        1000 * 60
-    );
-  });
+    },
+  );
 }
 
 export function getCalendarCheckRange(
@@ -181,7 +272,11 @@ export function getCalendarCheckRange(
   const start =
     new Date(event.start);
 
-  if (Number.isNaN(start.getTime())) {
+  if (
+    Number.isNaN(
+      start.getTime(),
+    )
+  ) {
     return {
       start: event.start,
       end: event.end,
@@ -206,7 +301,9 @@ export function getCalendarCheckRange(
   );
 
   return {
-    start: rangeStart.toISOString(),
-    end: rangeEnd.toISOString(),
+    start:
+      rangeStart.toISOString(),
+    end:
+      rangeEnd.toISOString(),
   };
 }

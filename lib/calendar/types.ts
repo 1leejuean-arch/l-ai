@@ -2,6 +2,8 @@ export type CalendarEvent = {
   title: string;
   start: string;
   end: string;
+  location?: string | null;
+  description?: string | null;
 };
 
 export type CalendarRange = {

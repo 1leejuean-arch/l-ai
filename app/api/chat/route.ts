@@ -7,6 +7,7 @@ import {
 import {
   driveCandidateToCalendarEvent,
   getCalendarCheckRange,
+  isDriveCalendarCancelCommand,
   isDuplicateCalendarEvent,
   parseDriveCalendarAddCommand,
 } from "@/lib/drive/calendar-register";
@@ -657,10 +658,29 @@ async function handleChatRequest(request: Request, sessionId: string) {
   }
 
   const pendingDriveCalendar =
-  getPendingDriveCalendar(sessionId);
+  getPendingDriveCalendar(
+    sessionId,
+  );
+
+if (
+  pendingDriveCalendar &&
+  isDriveCalendarCancelCommand(
+    message,
+  )
+) {
+  clearPendingDriveCalendar(
+    sessionId,
+  );
+
+  return chatReply(
+    "Drive 문서의 Calendar 일정 추가를 취소했어.",
+  );
+}
 
 const driveCalendarAddCommand =
-  parseDriveCalendarAddCommand(message);
+  parseDriveCalendarAddCommand(
+    message,
+  );
 
 if (
   !pending &&
@@ -672,20 +692,31 @@ if (
 
   if (
     driveCalendarAddCommand.kind ===
-    "one"
+    "selected"
   ) {
-    const selected =
-      pendingDriveCalendar.events[
-        driveCalendarAddCommand.index
-      ];
+    const invalidIndexes =
+      driveCalendarAddCommand.indexes.filter(
+        (index) =>
+          index < 0 ||
+          index >=
+            pendingDriveCalendar.events
+              .length,
+      );
 
-    if (!selected) {
+    if (
+      invalidIndexes.length > 0
+    ) {
       return chatReply(
         `선택할 수 있는 일정은 1번부터 ${pendingDriveCalendar.events.length}번까지야.`,
       );
     }
 
-    selectedEvents = [selected];
+    selectedEvents =
+      driveCalendarAddCommand.indexes.map(
+        (index) =>
+          pendingDriveCalendar
+            .events[index],
+      );
   }
 
   const added: string[] = [];
@@ -748,9 +779,7 @@ if (
 
   if (
     driveCalendarAddCommand.kind ===
-      "all" ||
-    pendingDriveCalendar.events.length ===
-      1
+    "all"
   ) {
     clearPendingDriveCalendar(
       sessionId,
@@ -807,403 +836,4 @@ if (
     result.join("\n"),
   );
 }
-  if (pending && isConfirmation(pending)) {
-    if (isApprovalForPending(shortReply, pending)) {
-      return executePendingAction(sessionId);
-    }
-
-    if (isActionApproval(shortReply)) {
-      return chatReply(expectedApprovalMessage(pending));
-    }
-
-    return chatReply(expectedApprovalMessage(pending));
-  } else if (
-    GENERIC_APPROVAL_MESSAGES.has(shortReply) ||
-    isActionApproval(shortReply)
-  ) {
-    return chatReply("확인할 일정 작업이 없습니다.");
-  }
-const driveCalendarCommand =
-  parseDriveCalendarCommand(message);
-
-if (driveCalendarCommand) {
-  let fileId: string;
-  let fileName: string;
-  let webViewLink: string | undefined;
-
-  if (driveCalendarCommand.query) {
-    const files = await searchGoogleDrive(
-      driveCalendarCommand.query,
-    );
-
-    if (files.length === 0) {
-      return chatReply(
-        `Google Drive에서 '${driveCalendarCommand.query}' 파일을 찾지 못했어.`,
-      );
-    }
-
-    const normalizedQuery =
-      driveCalendarCommand.query.toLowerCase();
-
-    const file =
-      files.find(
-        (item) =>
-          item.name.toLowerCase() === normalizedQuery,
-      ) ??
-      files.find((item) =>
-        item.name
-          .toLowerCase()
-          .includes(normalizedQuery),
-      ) ??
-      files[0];
-
-    fileId = file.id;
-    fileName = file.name;
-    webViewLink = file.webViewLink;
-
-    saveDriveContext(sessionId, {
-      fileId,
-      fileName,
-      webViewLink,
-    });
-  } else {
-    const context = getDriveContext(sessionId);
-
-    if (!context) {
-      return chatReply(
-        "어떤 Drive 문서에서 일정을 찾을지 파일명을 알려줘.",
-      );
-    }
-
-    fileId = context.fileId;
-    fileName = context.fileName;
-    webViewLink = context.webViewLink;
-  }
-
-  const text = await readGoogleDriveFile(fileId);
-
-  if (!text) {
-    return chatReply(
-      `'${fileName}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-    );
-  }
-
-  const events =
-    await extractCalendarEventsFromDriveFile(
-      fileName,
-      text,
-    );
-
-  if (events.length === 0) {
-    return chatReply(
-      formatDriveCalendarCandidates(
-        fileName,
-        events,
-      ),
-    );
-  }
-
-  setPendingDriveCalendar(sessionId, {
-    fileId,
-    fileName,
-    webViewLink,
-    events,
-  });
-
-  return chatReply(
-    `${formatDriveCalendarCandidates(
-      fileName,
-      events,
-    )}\n\n원하면 **"전부 추가해줘"** 또는 **"1번 추가해줘"**라고 말해줘.`,
-  );
-}
-  const savedDriveContext = getDriveContext(sessionId);
-
-if (
-  savedDriveContext &&
-  isDriveContextFollowUp(message)
-) {
-  const text = await readGoogleDriveFile(
-    savedDriveContext.fileId,
-  );
-
-  if (!text) {
-    return chatReply(
-      `'${savedDriveContext.fileName}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-    );
-  }
-
-  const answer = await answerDriveFileQuestion(
-    savedDriveContext.fileName,
-    text,
-    message,
-  );
-
-  const fileUrl =
-    savedDriveContext.webViewLink ||
-    `https://drive.google.com/open?id=${encodeURIComponent(
-      savedDriveContext.fileId,
-    )}`;
-
-  return chatReply(
-    `**${savedDriveContext.fileName}에서 이어서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
-  );
-}
- const driveIntent = parseDriveSearchIntent(message);
-
-if (driveIntent) {
-  const selectDriveFile = (
-    files: Awaited<ReturnType<typeof searchGoogleDrive>>,
-    query: string,
-  ) => {
-    const normalizedQuery = query.toLowerCase().trim();
-
-    const exactMatch = files.find(
-      (file) => file.name.toLowerCase() === normalizedQuery,
-    );
-
-    if (exactMatch) {
-      return exactMatch;
-    }
-
-    const partialMatch = files.find((file) =>
-      file.name.toLowerCase().includes(normalizedQuery),
-    );
-
-    if (partialMatch) {
-      return partialMatch;
-    }
-
-    const pdfFile = files.find((file) =>
-      file.name.toLowerCase().endsWith(".pdf"),
-    );
-
-    return pdfFile ?? files[0];
-  };
-
-  if (driveIntent.action === "recent") {
-    const files = await getRecentGoogleDriveFiles();
-
-    return chatReply(formatRecentDriveFiles(files));
-  }
-
-  if (driveIntent.action === "combine") {
-    const queries = driveIntent.queries;
-
-    if (!queries || queries.length < 2) {
-      return chatReply("종합할 파일을 2개 이상 알려줘.");
-    }
-
-    const searchResults = await Promise.all(
-      queries.map((query) => searchGoogleDrive(query)),
-    );
-
-    for (let index = 0; index < searchResults.length; index += 1) {
-      if (searchResults[index].length === 0) {
-        return chatReply(
-          `Google Drive에서 '${queries[index]}' 파일을 찾지 못했어.`,
-        );
-      }
-    }
-
-    const selectedFiles = searchResults.map((files, index) =>
-      selectDriveFile(files, queries[index]),
-    );
-
-    const texts = await Promise.all(
-      selectedFiles.map((file) => readGoogleDriveFile(file.id)),
-    );
-
-    for (let index = 0; index < texts.length; index += 1) {
-      if (!texts[index]) {
-        return chatReply(
-          `'${selectedFiles[index].name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-        );
-      }
-    }
-
-    const combined = await combineDriveFiles(
-      selectedFiles.map((file, index) => ({
-        name: file.name,
-        text: texts[index],
-      })),
-      driveIntent.combineQuestion,
-    );
-
-    const links = selectedFiles
-      .map((file, index) => {
-        const fileUrl =
-          file.webViewLink ||
-          `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
-
-        return `[파일 ${index + 1} 열기 - ${file.name}](${fileUrl})`;
-      })
-      .join(" · ");
-
-    return chatReply(
-      `**${selectedFiles.length}개 파일 종합 결과**\n\n${combined}\n\n${links}`,
-    );
-  }
-
-  if (driveIntent.action === "compare") {
-    const queries = driveIntent.queries;
-
-    if (!queries || queries.length < 2) {
-      return chatReply("비교할 두 파일을 알려줘.");
-    }
-
-    const [firstQuery, secondQuery] = queries;
-
-    const [firstFiles, secondFiles] = await Promise.all([
-      searchGoogleDrive(firstQuery),
-      searchGoogleDrive(secondQuery),
-    ]);
-
-    if (firstFiles.length === 0) {
-      return chatReply(
-        `Google Drive에서 '${firstQuery}' 파일을 찾지 못했어.`,
-      );
-    }
-
-    if (secondFiles.length === 0) {
-      return chatReply(
-        `Google Drive에서 '${secondQuery}' 파일을 찾지 못했어.`,
-      );
-    }
-
-    const firstFile = selectDriveFile(firstFiles, firstQuery);
-    const secondFile = selectDriveFile(secondFiles, secondQuery);
-
-    const [firstText, secondText] = await Promise.all([
-      readGoogleDriveFile(firstFile.id),
-      readGoogleDriveFile(secondFile.id),
-    ]);
-
-    if (!firstText) {
-      return chatReply(
-        `'${firstFile.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-      );
-    }
-
-    if (!secondText) {
-      return chatReply(
-        `'${secondFile.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-      );
-    }
-
-    const comparison = await compareDriveFiles(
-      firstFile.name,
-      firstText,
-      secondFile.name,
-      secondText,
-      driveIntent.compareQuestion,
-    );
-
-    const firstUrl =
-      firstFile.webViewLink ||
-      `https://drive.google.com/open?id=${encodeURIComponent(firstFile.id)}`;
-
-    const secondUrl =
-      secondFile.webViewLink ||
-      `https://drive.google.com/open?id=${encodeURIComponent(secondFile.id)}`;
-
-    return chatReply(
-      `**${firstFile.name} ↔ ${secondFile.name} 비교**\n\n${comparison}\n\n[첫 번째 파일 열기](${firstUrl}) · [두 번째 파일 열기](${secondUrl})`,
-    );
-  }
-
-  if (driveIntent.action === "summarize") {
-    if (!driveIntent.query) {
-      return chatReply("Google Drive에서 어떤 파일을 요약할까?");
-    }
-
-    const files = await searchGoogleDrive(driveIntent.query);
-
-    if (files.length === 0) {
-      return chatReply(
-        `Google Drive에서 '${driveIntent.query}' 파일을 찾지 못했어.`,
-      );
-    }
-
-    const file = selectDriveFile(files, driveIntent.query);
-    saveDriveContext(sessionId, {
-  fileId: file.id,
-  fileName: file.name,
-  webViewLink: file.webViewLink,
-});
-    const text = await readGoogleDriveFile(file.id);
-
-    if (!text) {
-      return chatReply(
-        `'${file.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-      );
-    }
-
-    const summary = await summarizeDriveFile(file.name, text);
-
-    const fileUrl =
-      file.webViewLink ||
-      `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
-
-    return chatReply(
-      `**${file.name} 요약**\n\n${summary}\n\n[원본 파일 열기](${fileUrl})`,
-    );
-  }
-
-  if (driveIntent.action === "ask") {
-    if (!driveIntent.query || !driveIntent.question) {
-      return chatReply("어떤 파일에서 무엇을 확인할까?");
-    }
-
-    const files = await searchGoogleDrive(driveIntent.query);
-
-    if (files.length === 0) {
-      return chatReply(
-        `Google Drive에서 '${driveIntent.query}' 파일을 찾지 못했어.`,
-      );
-    }
-
-    const file = selectDriveFile(files, driveIntent.query);
-    saveDriveContext(sessionId, {
-  fileId: file.id,
-  fileName: file.name,
-  webViewLink: file.webViewLink,
-});
-    const text = await readGoogleDriveFile(file.id);
-
-    if (!text) {
-      return chatReply(
-        `'${file.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-      );
-    }
-
-    const answer = await answerDriveFileQuestion(
-      file.name,
-      text,
-      driveIntent.question,
-    );
-
-    const fileUrl =
-      file.webViewLink ||
-      `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
-
-    return chatReply(
-      `**${file.name}에서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
-    );
-  }
-
-  if (driveIntent.action === "search") {
-    return driveIntent.query
-      ? handleDriveSearch(driveIntent.query)
-      : chatReply("Google Drive에서 어떤 파일을 찾을까?");
-  }
-}
-}
-export async function POST(request: Request) {
-  const sessionId =
-    request.headers.get("x-session-id") ||
-    request.headers.get("x-chat-session-id") ||
-    crypto.randomUUID();
-
-  return handleChatRequest(request, sessionId);
 }
