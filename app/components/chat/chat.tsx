@@ -1,5 +1,6 @@
 "use client";
 
+import { N8nStatus } from "./n8n-status";
 import { useEffect, useRef, useState } from "react";
 import type {
   ChatApiError,
@@ -78,21 +79,31 @@ const response = await fetch("/api/chat", {
   },
   body: JSON.stringify({ message }),
 });
-      const data: unknown = await response.json();
+    const rawText = await response.text();
 
-      if (!response.ok) {
-        throw new Error(
-          isChatApiError(data)
-            ? data.error
-            : "응답을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
-        );
-      }
+let data: unknown = {};
 
-      if (!isChatApiResponse(data)) {
-        throw new Error(
-          "응답을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.",
-        );
-      }
+if (rawText) {
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    data = {};
+  }
+}
+
+if (!response.ok) {
+  throw new Error(
+    isChatApiError(data)
+      ? data.error
+      : "L-AI 서버에서 요청을 처리하지 못했어. n8n 연결 상태를 확인해줘.",
+  );
+}
+
+if (!isChatApiResponse(data)) {
+  throw new Error(
+    "서버에서 응답을 받지 못했어. n8n 연결 상태를 확인해줘.",
+  );
+}
 
       setMessages((current) => [
         ...current,
@@ -137,6 +148,8 @@ const response = await fetch("/api/chat", {
             <span className="size-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.7)]" />
             Core v0.1
           </div>
+
+          <N8nStatus />
         </div>
       </header>
 

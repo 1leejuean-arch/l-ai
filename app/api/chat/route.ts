@@ -1,25 +1,12 @@
+import { routeUserMessage } from "@/lib/ai/router";
 import {
-  clearPendingDriveCalendar,
-  getPendingDriveCalendar,
-  setPendingDriveCalendar,
-} from "@/lib/drive/calendar-pending";
-
+  clearCalendarContext,
+  getCalendarContext,
+  saveCalendarContext,
+} from "@/lib/calendar/context";
 import {
-  driveCandidateToCalendarEvent,
-  getCalendarCheckRange,
-  isDriveCalendarCancelCommand,
-  isDuplicateCalendarEvent,
-  parseDriveCalendarAddCommand,
-} from "@/lib/drive/calendar-register";
-import {
-  extractCalendarEventsFromDriveFile,
-  formatDriveCalendarCandidates,
-} from "@/lib/drive/calendar-extract";
-
-import {
-  parseDriveCalendarCommand,
-} from "@/lib/drive/calendar-command";
-
+  handleDriveCalendarFlow,
+} from "@/lib/drive/calendar-flow";
 import {
   getDriveContext,
   isDriveContextFollowUp,
@@ -105,18 +92,56 @@ const N8N_TEST_MESSAGES = new Set([
 
 const GENERIC_APPROVAL_MESSAGES = new Set([
   "응",
+  "ㅇㅇ",
+  "웅",
+  "어",
   "그래",
+  "그래 해",
+  "그래 해줘",
+  "해",
+  "해줘",
+  "진행",
   "진행해",
   "확인",
   "네",
+  "넵",
   "예",
   "좋아",
+  "좋음",
+  "ㅇㅋ",
+  "오케이",
+  "ok",
+  "okay",
 ]);
 
 const ACTION_APPROVAL_MESSAGES = {
-  create: new Set(["추가", "추가해줘"]),
-  update: new Set(["수정", "수정해줘"]),
-  delete: new Set(["삭제", "삭제해줘"]),
+  create: new Set([
+    "추가",
+    "추가해",
+    "추가해줘",
+    "등록",
+    "등록해",
+    "등록해줘",
+  ]),
+
+  update: new Set([
+    "수정",
+    "수정해",
+    "수정해줘",
+    "변경",
+    "변경해",
+    "변경해줘",
+    "바꿔",
+    "바꿔줘",
+  ]),
+
+  delete: new Set([
+    "삭제",
+    "삭제해",
+    "삭제해줘",
+    "지워",
+    "지워줘",
+  ]),
 } as const;
 
 const CANCEL_MESSAGES = new Set([
@@ -235,30 +260,80 @@ async function handleDriveSearch(query: string) {
 }
 
 async function executePendingAction(sessionId: string) {
-  const pending = takePendingCalendarAction(sessionId);
+  const pending =
+    takePendingCalendarAction(sessionId);
 
   if (!pending || !isConfirmation(pending)) {
-    return chatReply("확인할 일정 작업이 없습니다.");
+    return chatReply(
+      "확인할 일정 작업이 없습니다.",
+    );
   }
 
   try {
     if (pending.kind === "create") {
-      await callCalendarN8n("calendar_create", pending.event);
-      return chatReply(formatCalendarCreated(pending.event));
+      await callCalendarN8n(
+        "calendar_create",
+        pending.event,
+      );
+
+      saveCalendarContext(sessionId, {
+        rangeLabel: "방금 생성한 일정",
+        events: [
+          {
+            title: pending.event.title,
+            start: pending.event.start,
+            end: pending.event.end,
+          },
+        ],
+      });
+
+      return chatReply(
+        formatCalendarCreated(
+          pending.event,
+        ),
+      );
     }
 
     if (pending.kind === "update") {
-      await callCalendarN8n("calendar_update", {
-        eventId: pending.eventId,
-        ...pending.after,
+      await callCalendarN8n(
+        "calendar_update",
+        {
+          eventId: pending.eventId,
+          ...pending.after,
+        },
+      );
+
+      saveCalendarContext(sessionId, {
+        rangeLabel: "방금 수정한 일정",
+        events: [
+          {
+            title: pending.after.title,
+            start: pending.after.start,
+            end: pending.after.end,
+          },
+        ],
       });
-      return chatReply(formatCalendarUpdated(pending.after));
+
+      return chatReply(
+        formatCalendarUpdated(
+          pending.after,
+        ),
+      );
     }
 
-    await callCalendarN8n("calendar_delete", {
-      eventId: pending.candidate.eventId,
-    });
-    return chatReply(formatCalendarDeleted());
+    await callCalendarN8n(
+      "calendar_delete",
+      {
+        eventId:
+          pending.candidate.eventId,
+      },
+    );
+
+    clearCalendarContext(sessionId);
+
+    return chatReply(
+      formatCalendarDeleted(),
+    );
   } catch {
     const operation =
       pending.kind === "create"
@@ -266,7 +341,11 @@ async function executePendingAction(sessionId: string) {
         : pending.kind === "update"
           ? "수정"
           : "삭제";
-    return chatError(`Google Calendar 일정 ${operation}에 실패했습니다.`, 502);
+
+    return chatError(
+      `Google Calendar 일정 ${operation}에 실패했습니다.`,
+      502,
+    );
   }
 }
 
@@ -509,12 +588,120 @@ async function handleCalendarDelete(
   return prepareDeleteConfirmation(sessionId, match.candidate);
 }
 
-async function handleCalendarGet(range: CalendarRange, rangeLabel: string) {
+function buildCalendarContextMessage(
+  sessionId: string,
+  message: string,
+) {
+  const context =
+    getCalendarContext(sessionId);
+
+  if (
+    !context ||
+    context.events.length === 0
+  ) {
+    return message;
+  }
+
+  const recentEvents =
+    context.events
+      .map(
+        (event, index) =>
+          `${index + 1}. 제목: ${event.title}, 시작: ${event.start}, 종료: ${event.end}`,
+      )
+      .join("\n");
+
+  return `
+최근 대화에서 사용자가 확인한 Calendar 일정은 다음과 같다.
+
+조회 범위:
+${context.rangeLabel || "알 수 없음"}
+
+최근 일정:
+${recentEvents}
+
+현재 사용자 요청:
+${message}
+
+"그거", "그 일정", "아까꺼", "방금꺼" 같은 표현은
+위 최근 일정 문맥을 우선해서 해석한다.
+
+최근 일정이 정확히 1개라면
+사용자가 다시 날짜나 제목을 말하지 않아도
+그 일정을 가리키는 것으로 해석한다.
+`.trim();
+}
+
+function resolveCalendarReferenceMessage(
+  sessionId: string,
+  message: string,
+) {
+  const context =
+    getCalendarContext(sessionId);
+
+  if (
+    !context ||
+    context.events.length !== 1
+  ) {
+    return message;
+  }
+
+  const referencePattern =
+    /(?:그거|그\s*일정|아까꺼|아까\s*거|방금꺼|방금\s*거|저거)/u;
+
+  if (!referencePattern.test(message)) {
+    return message;
+  }
+
+  const event = context.events[0];
+
+  const requestWithoutReference =
+    message
+      .replace(referencePattern, "")
+      .trim();
+
+  return `
+${event.start}에 시작하는 "${event.title}" 일정을 ${requestWithoutReference}
+`.trim();
+}
+async function handleCalendarGet(
+  sessionId: string,
+  range: CalendarRange,
+  rangeLabel: string,
+) {
   try {
-    const events = await callCalendarN8n("calendar_get", range);
-    return chatReply(formatCalendarEvents(events, rangeLabel));
+    const events = await callCalendarN8n(
+      "calendar_get",
+      range,
+    );
+
+    saveCalendarContext(sessionId, {
+      rangeLabel,
+      events: events
+        .filter(
+          (event) =>
+            event.start?.dateTime &&
+            event.end?.dateTime,
+        )
+        .map((event) => ({
+          title:
+            event.summary?.trim() ||
+            "제목 없는 일정",
+          start: event.start.dateTime!,
+          end: event.end.dateTime!,
+        })),
+    });
+
+    return chatReply(
+      formatCalendarEvents(
+        events,
+        rangeLabel,
+      ),
+    );
   } catch {
-    return chatError("Google Calendar 일정 조회에 실패했습니다.", 502);
+    return chatError(
+      "Google Calendar 일정 조회에 실패했습니다.",
+      502,
+    );
   }
 }
 
@@ -599,241 +786,677 @@ async function handleChatRequest(request: Request, sessionId: string) {
     return chatError("message 값을 입력해 주세요.", 400);
   }
 
-  const message = body.message.trim();
+  const rawMessage = body.message.trim();
+let message = rawMessage;
 
-  if (N8N_TEST_MESSAGES.has(message)) {
-    return handleN8nTest(message);
-  }
+if (N8N_TEST_MESSAGES.has(message)) {
+  return handleN8nTest(message);
+}
 
-  const shortReply = normalizeShortReply(message);
-  const pending = getPendingCalendarAction(sessionId);
+const rawShortReply =
+  normalizeShortReply(rawMessage);
 
-  if (CANCEL_MESSAGES.has(shortReply)) {
-    if (!pending) {
-      return chatReply("취소할 일정 작업이 없습니다.");
-    }
+const rawPending =
+  getPendingCalendarAction(sessionId);
 
-    clearPendingCalendarAction(sessionId);
-    return chatReply("Calendar 작업을 취소했어.");
-  }
+/*
+ * Calendar pending 작업은 AI Router보다 먼저 처리한다.
+ * "응", "추가", "취소", 번호 선택 같은 짧은 답변을
+ * AI가 일반대화로 바꾸지 못하게 한다.
+ */
 
-  if (pending?.kind === "clarify_update") {
-    return handleUpdateClarification(sessionId, pending, shortReply);
-  }
-
-  if (pending?.kind === "clarify_request") {
-    try {
-      return await handleStoredRequestClarification(
-        sessionId,
-        pending,
-        message,
-      );
-    } catch (error) {
-      if (error instanceof OpenAIConfigurationError) {
-        return chatError(
-          "AI 서비스를 사용할 수 없습니다. 서버 설정을 확인해 주세요.",
-          503,
-        );
-      }
-
-      return chatError(
-        "AI 응답을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
-        502,
-      );
-    }
-  }
-
-  if (pending?.kind === "select_update" || pending?.kind === "select_delete") {
-    const selectionResponse = handlePendingSelection(
-      sessionId,
-      pending,
-      shortReply,
+if (CANCEL_MESSAGES.has(rawShortReply)) {
+  if (!rawPending) {
+    return chatReply(
+      "취소할 일정 작업이 없습니다.",
     );
-
-    if (selectionResponse) {
-      return selectionResponse;
-    }
-
-    return chatReply(expectedApprovalMessage(pending));
   }
 
-  const pendingDriveCalendar =
-  getPendingDriveCalendar(
-    sessionId,
-  );
-
-if (
-  pendingDriveCalendar &&
-  isDriveCalendarCancelCommand(
-    message,
-  )
-) {
-  clearPendingDriveCalendar(
-    sessionId,
-  );
+  clearPendingCalendarAction(sessionId);
 
   return chatReply(
-    "Drive 문서의 Calendar 일정 추가를 취소했어.",
+    "Calendar 작업을 취소했어.",
   );
 }
 
-const driveCalendarAddCommand =
-  parseDriveCalendarAddCommand(
-    message,
+if (rawPending?.kind === "clarify_update") {
+  return handleUpdateClarification(
+    sessionId,
+    rawPending,
+    rawShortReply,
   );
+}
+
+if (rawPending?.kind === "clarify_request") {
+  try {
+    return await handleStoredRequestClarification(
+      sessionId,
+      rawPending,
+      rawMessage,
+    );
+  } catch (error) {
+    if (error instanceof OpenAIConfigurationError) {
+      return chatError(
+        "AI 서비스를 사용할 수 없습니다. 서버 설정을 확인해 주세요.",
+        503,
+      );
+    }
+
+    return chatError(
+      "AI 응답을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+      502,
+    );
+  }
+}
 
 if (
-  !pending &&
-  pendingDriveCalendar &&
-  driveCalendarAddCommand
+  rawPending?.kind === "select_update" ||
+  rawPending?.kind === "select_delete"
 ) {
-  let selectedEvents =
-    pendingDriveCalendar.events;
+  const selectionResponse =
+    handlePendingSelection(
+      sessionId,
+      rawPending,
+      rawShortReply,
+    );
 
+  if (selectionResponse) {
+    return selectionResponse;
+  }
+
+  return chatReply(
+    expectedApprovalMessage(rawPending),
+  );
+}
+
+if (rawPending && isConfirmation(rawPending)) {
   if (
-    driveCalendarAddCommand.kind ===
-    "selected"
+    isApprovalForPending(
+      rawShortReply,
+      rawPending,
+    )
   ) {
-    const invalidIndexes =
-      driveCalendarAddCommand.indexes.filter(
-        (index) =>
-          index < 0 ||
-          index >=
-            pendingDriveCalendar.events
-              .length,
-      );
+    return executePendingAction(sessionId);
+  }
+
+  return chatReply(
+    expectedApprovalMessage(rawPending),
+  );
+}
+
+if (
+  GENERIC_APPROVAL_MESSAGES.has(rawShortReply) ||
+  isActionApproval(rawShortReply)
+) {
+  return chatReply(
+    "확인할 일정 작업이 없습니다.",
+  );
+}
+
+/*
+ * 최근 Calendar 일정 직접 참조
+ * "그거 / 아까꺼 / 방금꺼" 같은 표현은
+ * AI Router보다 먼저 처리한다.
+ */
+const rememberedCalendarContext =
+  getCalendarContext(sessionId);
+
+const rememberedCalendarReferencePattern =
+  /(?:그거|그\s*일정|아까꺼|아까\s*거|방금꺼|방금\s*거|저거)/u;
+
+const calendarUpdateWordPattern =
+  /(?:바꿔|변경|수정)/u;
+
+if (
+  rememberedCalendarContext?.events.length === 1 &&
+  rememberedCalendarReferencePattern.test(rawMessage) &&
+  calendarUpdateWordPattern.test(rawMessage)
+) {
+  const targetEvent =
+    rememberedCalendarContext.events[0];
+
+  console.log("[Calendar Direct Reference]", {
+    rawMessage,
+    targetEvent,
+  });
+
+  const directUpdateRequest: CalendarUpdateRequest = {
+    range: {
+      start: targetEvent.start,
+      end: targetEvent.end,
+    },
+
+    target: {
+      title: targetEvent.title,
+      start: targetEvent.start,
+    },
+
+    patch: {
+      title: null,
+      start: null,
+      end: null,
+    },
+
+    unresolvedTime: null,
+    missingField: null,
+    clarification: null,
+  };
+
+  return handleCalendarUpdate(
+    sessionId,
+    directUpdateRequest,
+    rawMessage,
+  );
+}
+let routedMessage:
+  | Awaited<ReturnType<typeof routeUserMessage>>
+  | null = null;
+
+try {
+  const driveContextForRouter =
+    getDriveContext(sessionId);
+
+  routedMessage = await routeUserMessage(
+    message,
+    {
+      previousFileName:
+        driveContextForRouter?.fileName ??
+        null,
+    },
+  );
+
+  if (routedMessage) {
+    console.log("[AI Router]", {
+      original: message,
+      normalized:
+        routedMessage.normalizedMessage,
+      intent: routedMessage.intent,
+      confidence:
+        routedMessage.confidence,
+    });
+
+    const isCalendarIntent =
+  routedMessage.intent === "calendar_get" ||
+  routedMessage.intent === "calendar_create" ||
+  routedMessage.intent === "calendar_update" ||
+  routedMessage.intent === "calendar_delete";
+
+if (
+  !isCalendarIntent &&
+  routedMessage.needsClarification &&
+  routedMessage.clarificationQuestion
+) {
+  return chatReply(
+    routedMessage.clarificationQuestion,
+  );
+}
+
+    const normalizedMessage =
+      routedMessage.normalizedMessage.trim();
 
     if (
-      invalidIndexes.length > 0
+      normalizedMessage &&
+      routedMessage.confidence >= 0.65
     ) {
+      message = normalizedMessage;
+    }
+  }
+} catch (error) {
+  console.error(
+    "[AI Router] Route failed:",
+    error,
+  );
+
+  routedMessage = null;
+}
+
+/*
+ * AI Router - Calendar 직접 실행
+ */
+if (
+  routedMessage &&
+  (
+    routedMessage.intent === "calendar_get" ||
+    routedMessage.intent === "calendar_create" ||
+    routedMessage.intent === "calendar_update" ||
+    routedMessage.intent === "calendar_delete"
+  )
+) {
+  try {
+    const referencedMessage =
+  resolveCalendarReferenceMessage(
+    sessionId,
+    rawMessage,
+  );
+
+const calendarMessage =
+  referencedMessage !== rawMessage
+    ? referencedMessage
+    : buildCalendarContextMessage(
+        sessionId,
+        rawMessage,
+      );
+
+const calendarResult =
+  await parseCalendarRequest(
+    calendarMessage,
+    new Date(),
+  );
+
+    if (calendarResult.kind === "get") {
+      return handleCalendarGet(
+  sessionId,
+  calendarResult.range,
+  calendarResult.rangeLabel,
+);
+    }
+
+    if (calendarResult.kind === "create") {
+      setPendingCalendarAction(
+        sessionId,
+        {
+          kind: "create",
+          event: calendarResult.event,
+        },
+      );
+
       return chatReply(
-        `선택할 수 있는 일정은 1번부터 ${pendingDriveCalendar.events.length}번까지야.`,
+        formatCalendarConfirmation(
+          calendarResult.event,
+        ),
       );
     }
 
-    selectedEvents =
-      driveCalendarAddCommand.indexes.map(
-        (index) =>
-          pendingDriveCalendar
-            .events[index],
+    if (calendarResult.kind === "update") {
+      return handleCalendarUpdate(
+        sessionId,
+        calendarResult.request,
+        message,
       );
-  }
+    }
 
-  const added: string[] = [];
-  const duplicates: string[] = [];
-  const failed: string[] = [];
-
-  for (
-    const candidate of selectedEvents
-  ) {
-    const calendarEvent =
-      driveCandidateToCalendarEvent(
-        candidate,
+    if (calendarResult.kind === "delete") {
+      return handleCalendarDelete(
+        sessionId,
+        calendarResult.request,
       );
+    }
 
-    try {
-      const range =
-        getCalendarCheckRange(
-          calendarEvent,
-        );
-
-      const existingEvents =
-        await callCalendarN8n(
-          "calendar_get",
-          range,
-        );
-
+    if (calendarResult.kind === "clarify") {
       if (
-        isDuplicateCalendarEvent(
-          calendarEvent,
-          existingEvents,
-        )
+        calendarResult.operation === "update" ||
+        calendarResult.operation === "delete"
       ) {
-        duplicates.push(
-          calendarEvent.title,
+        setPendingCalendarAction(
+          sessionId,
+          {
+            kind: "clarify_request",
+            operation:
+              calendarResult.operation,
+            originalMessage: message,
+            question:
+              calendarResult.message,
+            missingField: null,
+            stage: "clarification",
+          },
         );
-
-        continue;
       }
 
-      await callCalendarN8n(
-        "calendar_create",
-        calendarEvent,
-      );
-
-      added.push(
-        calendarEvent.title,
-      );
-    } catch (error) {
-      console.error(
-        "[Drive Calendar] Failed to create event:",
-        candidate.title,
-        error,
-      );
-
-      failed.push(
-        candidate.title,
+      return chatReply(
+        calendarResult.message,
       );
     }
-  }
 
-  if (
-    driveCalendarAddCommand.kind ===
-    "all"
-  ) {
-    clearPendingDriveCalendar(
-      sessionId,
-    );
-  }
-
-  const result: string[] = [];
-
-  if (added.length > 0) {
-    result.push(
-      `**${added.length}개의 일정을 Calendar에 추가했어 ✅**`,
-      "",
-      ...added.map(
-        (title) => `- ${title}`,
-      ),
-    );
-  }
-
-  if (duplicates.length > 0) {
-    if (result.length > 0) {
-      result.push("");
-    }
-
-    result.push(
-      `**이미 등록되어 있어서 건너뛴 일정 ${duplicates.length}개**`,
-      "",
-      ...duplicates.map(
-        (title) => `- ${title}`,
-      ),
-    );
-  }
-
-  if (failed.length > 0) {
-    if (result.length > 0) {
-      result.push("");
-    }
-
-    result.push(
-      `**등록에 실패한 일정 ${failed.length}개**`,
-      "",
-      ...failed.map(
-        (title) => `- ${title}`,
-      ),
-    );
-  }
-
-  if (result.length === 0) {
+    /*
+     * Router는 Calendar라고 판단했는데
+     * Calendar parser가 못 알아들은 경우
+     */
     return chatReply(
-      "추가할 일정이 없었어.",
+      "일정 요청은 이해했는데 세부 내용을 정확히 해석하지 못했어. 조금만 다르게 말해줘.",
+    );
+  } catch (error) {
+    console.error(
+      "[AI Router] Calendar execution failed:",
+      error,
+    );
+
+    if (
+      error instanceof
+      OpenAIConfigurationError
+    ) {
+      return chatError(
+        "AI 서비스를 사용할 수 없습니다. 서버 설정을 확인해 주세요.",
+        503,
+      );
+    }
+
+    return chatError(
+      "Calendar 요청을 처리하지 못했어. 잠시 후 다시 시도해줘.",
+      502,
     );
   }
+}
+  /*
+ * AI Router - Drive 직접 실행
+ */
+if (
+  routedMessage?.intent === "drive_list" ||
+  routedMessage?.intent === "drive_recent"
+) {
+  try {
+    const files = await getRecentGoogleDriveFiles();
+
+    return chatReply(
+      formatRecentDriveFiles(files),
+    );
+  } catch (error) {
+    console.error(
+      "[AI Router] Drive list/recent failed:",
+      error,
+    );
+
+    return chatError(
+      "Google Drive 파일 목록을 불러오지 못했어.",
+      502,
+    );
+  }
+}
+  const savedDriveContext = getDriveContext(sessionId);
+
+if (
+  savedDriveContext &&
+  isDriveContextFollowUp(message)
+) {
+  const text = await readGoogleDriveFile(
+    savedDriveContext.fileId,
+  );
+
+  if (!text) {
+    return chatReply(
+      `'${savedDriveContext.fileName}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+    );
+  }
+
+  const answer = await answerDriveFileQuestion(
+    savedDriveContext.fileName,
+    text,
+    message,
+  );
+
+  const fileUrl =
+    savedDriveContext.webViewLink ||
+    `https://drive.google.com/open?id=${encodeURIComponent(
+      savedDriveContext.fileId,
+    )}`;
 
   return chatReply(
-    result.join("\n"),
+    `**${savedDriveContext.fileName}에서 이어서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
   );
 }
+const driveCalendarResponse =
+  await handleDriveCalendarFlow(
+    message,
+    sessionId,
+  );
+
+if (driveCalendarResponse) {
+  return driveCalendarResponse;
+}
+ const driveIntent = parseDriveSearchIntent(message);
+
+if (driveIntent) {
+  const selectDriveFile = (
+    files: Awaited<ReturnType<typeof searchGoogleDrive>>,
+    query: string,
+  ) => {
+    const normalizedQuery = query.toLowerCase().trim();
+
+    const exactMatch = files.find(
+      (file) => file.name.toLowerCase() === normalizedQuery,
+    );
+
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    const partialMatch = files.find((file) =>
+      file.name.toLowerCase().includes(normalizedQuery),
+    );
+
+    if (partialMatch) {
+      return partialMatch;
+    }
+
+    const pdfFile = files.find((file) =>
+      file.name.toLowerCase().endsWith(".pdf"),
+    );
+
+    return pdfFile ?? files[0];
+  };
+
+  if (driveIntent.action === "recent") {
+    const files = await getRecentGoogleDriveFiles();
+
+    return chatReply(formatRecentDriveFiles(files));
+  }
+
+  if (driveIntent.action === "combine") {
+    const queries = driveIntent.queries;
+
+    if (!queries || queries.length < 2) {
+      return chatReply("종합할 파일을 2개 이상 알려줘.");
+    }
+
+    const searchResults = await Promise.all(
+      queries.map((query) => searchGoogleDrive(query)),
+    );
+
+    for (let index = 0; index < searchResults.length; index += 1) {
+      if (searchResults[index].length === 0) {
+        return chatReply(
+          `Google Drive에서 '${queries[index]}' 파일을 찾지 못했어.`,
+        );
+      }
+    }
+
+    const selectedFiles = searchResults.map((files, index) =>
+      selectDriveFile(files, queries[index]),
+    );
+
+    const texts = await Promise.all(
+      selectedFiles.map((file) => readGoogleDriveFile(file.id)),
+    );
+
+    for (let index = 0; index < texts.length; index += 1) {
+      if (!texts[index]) {
+        return chatReply(
+          `'${selectedFiles[index].name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+        );
+      }
+    }
+
+    const combined = await combineDriveFiles(
+      selectedFiles.map((file, index) => ({
+        name: file.name,
+        text: texts[index],
+      })),
+      driveIntent.combineQuestion,
+    );
+
+    const links = selectedFiles
+      .map((file, index) => {
+        const fileUrl =
+          file.webViewLink ||
+          `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+
+        return `[파일 ${index + 1} 열기 - ${file.name}](${fileUrl})`;
+      })
+      .join(" · ");
+
+    return chatReply(
+      `**${selectedFiles.length}개 파일 종합 결과**\n\n${combined}\n\n${links}`,
+    );
+  }
+
+  if (driveIntent.action === "compare") {
+    const queries = driveIntent.queries;
+
+    if (!queries || queries.length < 2) {
+      return chatReply("비교할 두 파일을 알려줘.");
+    }
+
+    const [firstQuery, secondQuery] = queries;
+
+    const [firstFiles, secondFiles] = await Promise.all([
+      searchGoogleDrive(firstQuery),
+      searchGoogleDrive(secondQuery),
+    ]);
+
+    if (firstFiles.length === 0) {
+      return chatReply(
+        `Google Drive에서 '${firstQuery}' 파일을 찾지 못했어.`,
+      );
+    }
+
+    if (secondFiles.length === 0) {
+      return chatReply(
+        `Google Drive에서 '${secondQuery}' 파일을 찾지 못했어.`,
+      );
+    }
+
+    const firstFile = selectDriveFile(firstFiles, firstQuery);
+    const secondFile = selectDriveFile(secondFiles, secondQuery);
+
+    const [firstText, secondText] = await Promise.all([
+      readGoogleDriveFile(firstFile.id),
+      readGoogleDriveFile(secondFile.id),
+    ]);
+
+    if (!firstText) {
+      return chatReply(
+        `'${firstFile.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+      );
+    }
+
+    if (!secondText) {
+      return chatReply(
+        `'${secondFile.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+      );
+    }
+
+    const comparison = await compareDriveFiles(
+      firstFile.name,
+      firstText,
+      secondFile.name,
+      secondText,
+      driveIntent.compareQuestion,
+    );
+
+    const firstUrl =
+      firstFile.webViewLink ||
+      `https://drive.google.com/open?id=${encodeURIComponent(firstFile.id)}`;
+
+    const secondUrl =
+      secondFile.webViewLink ||
+      `https://drive.google.com/open?id=${encodeURIComponent(secondFile.id)}`;
+
+    return chatReply(
+      `**${firstFile.name} ↔ ${secondFile.name} 비교**\n\n${comparison}\n\n[첫 번째 파일 열기](${firstUrl}) · [두 번째 파일 열기](${secondUrl})`,
+    );
+  }
+
+  if (driveIntent.action === "summarize") {
+    if (!driveIntent.query) {
+      return chatReply("Google Drive에서 어떤 파일을 요약할까?");
+    }
+
+    const files = await searchGoogleDrive(driveIntent.query);
+
+    if (files.length === 0) {
+      return chatReply(
+        `Google Drive에서 '${driveIntent.query}' 파일을 찾지 못했어.`,
+      );
+    }
+
+    const file = selectDriveFile(files, driveIntent.query);
+    saveDriveContext(sessionId, {
+  fileId: file.id,
+  fileName: file.name,
+  webViewLink: file.webViewLink,
+});
+    const text = await readGoogleDriveFile(file.id);
+
+    if (!text) {
+      return chatReply(
+        `'${file.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+      );
+    }
+
+    const summary = await summarizeDriveFile(file.name, text);
+
+    const fileUrl =
+      file.webViewLink ||
+      `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+
+    return chatReply(
+      `**${file.name} 요약**\n\n${summary}\n\n[원본 파일 열기](${fileUrl})`,
+    );
+  }
+
+  if (driveIntent.action === "ask") {
+    if (!driveIntent.query || !driveIntent.question) {
+      return chatReply("어떤 파일에서 무엇을 확인할까?");
+    }
+
+    const files = await searchGoogleDrive(driveIntent.query);
+
+    if (files.length === 0) {
+      return chatReply(
+        `Google Drive에서 '${driveIntent.query}' 파일을 찾지 못했어.`,
+      );
+    }
+
+    const file = selectDriveFile(files, driveIntent.query);
+    saveDriveContext(sessionId, {
+  fileId: file.id,
+  fileName: file.name,
+  webViewLink: file.webViewLink,
+});
+    const text = await readGoogleDriveFile(file.id);
+
+    if (!text) {
+      return chatReply(
+        `'${file.name}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+      );
+    }
+
+    const answer = await answerDriveFileQuestion(
+      file.name,
+      text,
+      driveIntent.question,
+    );
+
+    const fileUrl =
+      file.webViewLink ||
+      `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+
+    return chatReply(
+      `**${file.name}에서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
+    );
+  }
+
+  if (driveIntent.action === "search") {
+    return driveIntent.query
+      ? handleDriveSearch(driveIntent.query)
+      : chatReply("Google Drive에서 어떤 파일을 찾을까?");
+  }
+}
+}
+export async function POST(request: Request) {
+  const sessionId =
+    request.headers.get("x-session-id") ||
+    request.headers.get("x-chat-session-id") ||
+    crypto.randomUUID();
+
+  return handleChatRequest(request, sessionId);
 }
