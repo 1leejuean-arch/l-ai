@@ -10,6 +10,7 @@ import {
 } from "@/lib/drive/calendar-flow";
 import {
   getDriveContext,
+  hydrateDriveContext,
   isDriveContextFollowUp,
   saveDriveContext,
 } from "@/lib/drive/context";
@@ -251,12 +252,36 @@ async function handleN8nTest(message: string) {
   }
 }
 
-async function handleDriveSearch(query: string) {
+async function handleDriveSearch(
+  sessionId: string,
+  query: string,
+) {
   try {
     const files = await searchGoogleDrive(query);
-    return chatReply(formatDriveSearchResults(query, files));
+
+    if (files.length === 1) {
+      const file = files[0];
+
+      saveDriveContext(sessionId, {
+        fileId: file.id,
+        fileName: file.name,
+        webViewLink: file.webViewLink,
+      });
+
+      console.log("[Drive Context] Saved search result:", {
+        sessionId,
+        fileName: file.name,
+      });
+    }
+
+    return chatReply(
+      formatDriveSearchResults(query, files),
+    );
   } catch {
-    return chatError("Google Drive 파일 검색에 실패했습니다.", 502);
+    return chatError(
+      "Google Drive 파일 검색에 실패했습니다.",
+      502,
+    );
   }
 }
 
@@ -790,6 +815,7 @@ async function handleChatRequest(request: Request, sessionId: string) {
   const rawMessage = body.message.trim();
 let message = rawMessage;
 await hydrateCalendarContext(sessionId);
+await hydrateDriveContext(sessionId);
 
 if (N8N_TEST_MESSAGES.has(message)) {
   return handleN8nTest(message);
@@ -1398,11 +1424,39 @@ if (driveIntent) {
   }
 
   if (driveIntent.action === "summarize") {
+  const rememberedFile =
+    getDriveContext(sessionId);
+
+  let file:
+    | {
+        id: string;
+        name: string;
+        webViewLink?: string;
+      }
+    | null = rememberedFile
+      ? {
+          id: rememberedFile.fileId,
+          name: rememberedFile.fileName,
+          webViewLink:
+            rememberedFile.webViewLink,
+        }
+      : null;
+
+  /*
+   * 최근 파일 기억이 없을 때만
+   * Google Drive에서 다시 검색한다.
+   */
+  if (!file) {
     if (!driveIntent.query) {
-      return chatReply("Google Drive에서 어떤 파일을 요약할까?");
+      return chatReply(
+        "Google Drive에서 어떤 파일을 요약할까?",
+      );
     }
 
-    const files = await searchGoogleDrive(driveIntent.query);
+    const files =
+      await searchGoogleDrive(
+        driveIntent.query,
+      );
 
     if (files.length === 0) {
       return chatReply(
@@ -1410,13 +1464,40 @@ if (driveIntent) {
       );
     }
 
-    const file = selectDriveFile(files, driveIntent.query);
+    const selectedFile =
+      selectDriveFile(
+        files,
+        driveIntent.query,
+      );
+
+    file = {
+      id: selectedFile.id,
+      name: selectedFile.name,
+      webViewLink:
+        selectedFile.webViewLink,
+    };
+
     saveDriveContext(sessionId, {
-  fileId: file.id,
-  fileName: file.name,
-  webViewLink: file.webViewLink,
-});
-    const text = await readGoogleDriveFile(file.id);
+      fileId: file.id,
+      fileName: file.name,
+      webViewLink:
+        file.webViewLink,
+    });
+  }
+
+  console.log(
+    "[Drive Context] Summarizing file:",
+    {
+      sessionId,
+      fileName: file.name,
+      fileId: file.id,
+    },
+  );
+
+  const text =
+    await readGoogleDriveFile(
+      file.id,
+    );
 
     if (!text) {
       return chatReply(
@@ -1479,7 +1560,10 @@ if (driveIntent) {
 
   if (driveIntent.action === "search") {
     return driveIntent.query
-      ? handleDriveSearch(driveIntent.query)
+      ? handleDriveSearch(
+  sessionId,
+  driveIntent.query,
+)
       : chatReply("Google Drive에서 어떤 파일을 찾을까?");
   }
 }
