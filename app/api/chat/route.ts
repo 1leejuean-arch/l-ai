@@ -2,6 +2,7 @@ import { routeUserMessage } from "@/lib/ai/router";
 import {
   clearCalendarContext,
   getCalendarContext,
+  hydrateCalendarContext,
   saveCalendarContext,
 } from "@/lib/calendar/context";
 import {
@@ -788,6 +789,7 @@ async function handleChatRequest(request: Request, sessionId: string) {
 
   const rawMessage = body.message.trim();
 let message = rawMessage;
+await hydrateCalendarContext(sessionId);
 
 if (N8N_TEST_MESSAGES.has(message)) {
   return handleN8nTest(message);
@@ -895,58 +897,88 @@ if (
 
 /*
  * 최근 Calendar 일정 직접 참조
- * "그거 / 아까꺼 / 방금꺼" 같은 표현은
+ *
+ * 최근 일정이 정확히 1개라면
+ * "그거", "방금꺼", "아까꺼" 같은 표현을
  * AI Router보다 먼저 처리한다.
  */
 const rememberedCalendarContext =
   getCalendarContext(sessionId);
 
 const rememberedCalendarReferencePattern =
-  /(?:그거|그\s*일정|아까꺼|아까\s*거|방금꺼|방금\s*거|저거)/u;
+  /(?:그거|그걸|그\s*거|그\s*일정|저거|저걸|아까꺼|아까\s*거|아까\s*그거|아까\s*일정|방금꺼|방금\s*거|방금\s*그거|방금\s*일정|방금\s*만든\s*거|방금\s*수정한\s*거|전에\s*말한\s*거|아까\s*말한\s*거)/u;
 
 const calendarUpdateWordPattern =
-  /(?:바꿔|변경|수정)/u;
+  /(?:바꿔|변경|수정|옮겨|미뤄|당겨)/u;
+
+const calendarDeleteWordPattern =
+  /(?:지워|삭제|없애)/u;
 
 if (
   rememberedCalendarContext?.events.length === 1 &&
-  rememberedCalendarReferencePattern.test(rawMessage) &&
-  calendarUpdateWordPattern.test(rawMessage)
+  rememberedCalendarReferencePattern.test(rawMessage)
 ) {
   const targetEvent =
     rememberedCalendarContext.events[0];
 
-  console.log("[Calendar Direct Reference]", {
-    rawMessage,
-    targetEvent,
-  });
+  if (calendarUpdateWordPattern.test(rawMessage)) {
+    console.log("[Calendar Direct Reference: Update]", {
+      rawMessage,
+      targetEvent,
+    });
 
-  const directUpdateRequest: CalendarUpdateRequest = {
-    range: {
-      start: targetEvent.start,
-      end: targetEvent.end,
-    },
+    const directUpdateRequest: CalendarUpdateRequest = {
+      range: {
+        start: targetEvent.start,
+        end: targetEvent.end,
+      },
 
-    target: {
-      title: targetEvent.title,
-      start: targetEvent.start,
-    },
+      target: {
+        title: targetEvent.title,
+        start: targetEvent.start,
+      },
 
-    patch: {
-      title: null,
-      start: null,
-      end: null,
-    },
+      patch: {
+        title: null,
+        start: null,
+        end: null,
+      },
 
-    unresolvedTime: null,
-    missingField: null,
-    clarification: null,
-  };
+      unresolvedTime: null,
+      missingField: null,
+      clarification: null,
+    };
 
-  return handleCalendarUpdate(
-    sessionId,
-    directUpdateRequest,
-    rawMessage,
-  );
+    return handleCalendarUpdate(
+      sessionId,
+      directUpdateRequest,
+      rawMessage,
+    );
+  }
+
+  if (calendarDeleteWordPattern.test(rawMessage)) {
+    console.log("[Calendar Direct Reference: Delete]", {
+      rawMessage,
+      targetEvent,
+    });
+
+    const directDeleteRequest: CalendarDeleteRequest = {
+      range: {
+        start: targetEvent.start,
+        end: targetEvent.end,
+      },
+
+      target: {
+        title: targetEvent.title,
+        start: targetEvent.start,
+      },
+    };
+
+    return handleCalendarDelete(
+      sessionId,
+      directDeleteRequest,
+    );
+  }
 }
 let routedMessage:
   | Awaited<ReturnType<typeof routeUserMessage>>

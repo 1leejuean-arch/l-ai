@@ -64,11 +64,11 @@ export function Chat() {
     setIsLoading(true);
 
     try {
-      let sessionId = sessionStorage.getItem("l-ai-session-id");
+      let sessionId = localStorage.getItem("l-ai-session-id")
 
 if (!sessionId) {
   sessionId = crypto.randomUUID();
-  sessionStorage.setItem("l-ai-session-id", sessionId);
+  localStorage.setItem("l-ai-session-id", sessionId);
 }
 
 const response = await fetch("/api/chat", {
