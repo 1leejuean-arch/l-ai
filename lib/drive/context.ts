@@ -1,5 +1,5 @@
+import { saveMemory } from "@/lib/memory/context";
 import "server-only";
-
 type DriveConversationContext = {
   fileId: string;
   fileName: string;
@@ -262,14 +262,25 @@ export function saveDriveContext(
   };
 
   driveContexts.set(
-    sessionId,
-    savedContext,
-  );
+  sessionId,
+  savedContext,
+);
 
-  void persistDriveContext(
-    sessionId,
-    savedContext,
-  );
+saveMemory(
+  sessionId,
+  "drive",
+  "recent_file",
+  {
+    fileId: savedContext.fileId,
+    fileName: savedContext.fileName,
+    webViewLink: savedContext.webViewLink,
+  },
+);
+
+void persistDriveContext(
+  sessionId,
+  savedContext,
+);
 }
 
 export function getDriveContext(

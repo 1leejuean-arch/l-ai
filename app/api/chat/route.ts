@@ -1,3 +1,4 @@
+import { getMemory } from "@/lib/memory/context";
 import { routeUserMessage } from "@/lib/ai/router";
 import {
   clearCalendarContext,
@@ -816,6 +817,47 @@ async function handleChatRequest(request: Request, sessionId: string) {
 let message = rawMessage;
 await hydrateCalendarContext(sessionId);
 await hydrateDriveContext(sessionId);
+const rememberedDriveFile = await getMemory<{
+  fileId: string;
+  fileName: string;
+  webViewLink?: string;
+}>(
+  sessionId,
+  "drive",
+  "recent_file",
+);
+
+const driveToCalendarPattern =
+  /(?:그\s*파일|아까\s*파일|방금\s*파일|그\s*문서).*(?:일정|캘린더|달력).*(?:추가|등록|넣어|만들어)|(?:그\s*파일|아까\s*파일|방금\s*파일|그\s*문서).*(?:일정\s*찾아)/u;
+
+if (
+  rememberedDriveFile &&
+  driveToCalendarPattern.test(rawMessage)
+) {
+  console.log(
+    "[L-AI Memory] Drive → Calendar cross-context:",
+    {
+      sessionId,
+      fileName: rememberedDriveFile.fileName,
+      fileId: rememberedDriveFile.fileId,
+    },
+  );
+
+  const text = await readGoogleDriveFile(
+    rememberedDriveFile.fileId,
+  );
+
+  if (!text) {
+    return chatReply(
+      `${rememberedDriveFile.fileName} 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+    );
+  }
+
+  // 기존 Drive → Calendar 일정 추출 흐름으로 넘기기
+  message =
+    `${rememberedDriveFile.fileName} 파일 내용에서 일정 찾아서 캘린더에 추가해줘.\n\n` +
+    text;
+}
 
 if (N8N_TEST_MESSAGES.has(message)) {
   return handleN8nTest(message);

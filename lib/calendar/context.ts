@@ -1,5 +1,5 @@
 import "server-only";
-
+import { saveMemory } from "@/lib/memory/context";
 type CalendarContextEvent = {
   title: string;
   start: string;
@@ -297,18 +297,28 @@ export function saveCalendarContext(
   };
 
   calendarContexts.set(
-    sessionId,
-    savedContext,
-  );
+  sessionId,
+  savedContext,
+);
 
-  /*
-   * 기존 코드들을 전부 async로 바꾸지 않기 위해
-   * DB 저장은 백그라운드로 진행한다.
-   */
-  void persistCalendarContext(
-    sessionId,
-    savedContext,
-  );
+saveMemory(
+  sessionId,
+  "calendar",
+  "recent_events",
+  {
+    rangeLabel: savedContext.rangeLabel,
+    events: savedContext.events,
+  },
+);
+
+/*
+ * 기존 코드들을 전부 async로 바꾸지 않기 위해
+ * DB 저장은 백그라운드로 진행한다.
+ */
+void persistCalendarContext(
+  sessionId,
+  savedContext,
+);
 }
 
 export function getCalendarContext(
