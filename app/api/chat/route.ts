@@ -1,5 +1,9 @@
+
 import { getMemory } from "@/lib/memory/context";
-import { routeUserMessage } from "@/lib/ai/router";
+import {
+  getCalendarCheckRange,
+  isDuplicateCalendarEvent,
+} from "@/lib/drive/calendar-register";import { routeUserMessage } from "@/lib/ai/router";
 import {
   clearCalendarContext,
   getCalendarContext,
@@ -298,28 +302,80 @@ async function executePendingAction(sessionId: string) {
 
   try {
     if (pending.kind === "create") {
-      await callCalendarN8n(
-        "calendar_create",
-        pending.event,
-      );
+  /*
+   * 실제 생성하기 전에 같은 날짜의
+   * 기존 Calendar 일정을 먼저 조회한다.
+   */
+  const checkRange =
+    getCalendarCheckRange(
+      pending.event,
+    );
 
-      saveCalendarContext(sessionId, {
-        rangeLabel: "방금 생성한 일정",
-        events: [
-          {
-            title: pending.event.title,
-            start: pending.event.start,
-            end: pending.event.end,
-          },
-        ],
-      });
+  const existingEvents =
+    await callCalendarN8n(
+      "calendar_get",
+      checkRange,
+    );
 
-      return chatReply(
-        formatCalendarCreated(
-          pending.event,
-        ),
-      );
-    }
+  /*
+   * 같은 날짜 + 비슷한 제목 +
+   * 시작시간 15분 이내라면 중복으로 판단.
+   */
+  const isDuplicate =
+    isDuplicateCalendarEvent(
+      pending.event,
+      existingEvents,
+    );
+
+  if (isDuplicate) {
+    console.log(
+      "[Calendar] Duplicate event blocked:",
+      {
+        title:
+          pending.event.title,
+        start:
+          pending.event.start,
+      },
+    );
+
+    return chatReply(
+      `이미 비슷한 일정이 등록되어 있어서 추가하지 않았어.\n\n` +
+        `**${pending.event.title}**`,
+    );
+  }
+
+  /*
+   * 중복이 아닐 때만 실제 생성
+   */
+  await callCalendarN8n(
+    "calendar_create",
+    pending.event,
+  );
+
+  saveCalendarContext(
+    sessionId,
+    {
+      rangeLabel:
+        "방금 생성한 일정",
+      events: [
+        {
+          title:
+            pending.event.title,
+          start:
+            pending.event.start,
+          end:
+            pending.event.end,
+        },
+      ],
+    },
+  );
+
+  return chatReply(
+    formatCalendarCreated(
+      pending.event,
+    ),
+  );
+}
 
     if (pending.kind === "update") {
       await callCalendarN8n(
