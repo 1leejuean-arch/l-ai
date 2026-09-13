@@ -1,6 +1,11 @@
 import "server-only";
 
 import { callCalendarN8n } from "@/lib/calendar/n8n";
+import {
+  deleteMemory,
+  getMemory,
+  saveMemory,
+} from "@/lib/memory/context";
 
 import {
   extractCalendarEventsFromDriveFile,
@@ -35,6 +40,17 @@ import {
   searchGoogleDrive,
 } from "./n8n";
 
+type DriveCalendarPendingMemory = {
+  fileId: string;
+  fileName: string;
+  webViewLink?: string;
+  events: Awaited<
+    ReturnType<
+      typeof extractCalendarEventsFromDriveFile
+    >
+  >;
+};
+
 function reply(message: string) {
   return Response.json({
     reply: message,
@@ -53,14 +69,58 @@ export async function handleDriveCalendarFlow(
    *    - 취소
    */
 
-  const pending =
+  let pending =
     getPendingDriveCalendar(sessionId);
+
+  /*
+   * 서버 재시작 등으로 RAM의 후보가 사라졌다면
+   * Supabase 통합 Memory에서 다시 복원한다.
+   */
+  if (!pending) {
+    const persistedPending =
+      await getMemory<DriveCalendarPendingMemory>(
+        sessionId,
+        "action",
+        "pending_calendar_candidates",
+      );
+
+    if (persistedPending) {
+      setPendingDriveCalendar(
+        sessionId,
+        persistedPending,
+      );
+
+      pending =
+  getPendingDriveCalendar(
+    sessionId,
+  );
+
+      console.log(
+        "[L-AI Memory] Restored Drive Calendar candidates:",
+        {
+          sessionId,
+          fileName:
+            persistedPending.fileName,
+          events:
+            persistedPending.events.length,
+        },
+      );
+    }
+  }
 
   if (
     pending &&
     isDriveCalendarCancelCommand(message)
   ) {
-    clearPendingDriveCalendar(sessionId);
+    clearPendingDriveCalendar(
+      sessionId,
+    );
+
+    await deleteMemory(
+      sessionId,
+      "action",
+      "pending_calendar_candidates",
+    );
 
     return reply(
       "Drive 문서의 Calendar 일정 추가를 취소했어.",
@@ -71,17 +131,23 @@ export async function handleDriveCalendarFlow(
     parseDriveCalendarAddCommand(message);
 
   if (pending && addCommand) {
-    let selectedEvents = pending.events;
+    let selectedEvents =
+      pending.events;
 
-    if (addCommand.kind === "selected") {
+    if (
+      addCommand.kind === "selected"
+    ) {
       const invalidIndexes =
         addCommand.indexes.filter(
           (index) =>
             index < 0 ||
-            index >= pending.events.length,
+            index >=
+              pending.events.length,
         );
 
-      if (invalidIndexes.length > 0) {
+      if (
+        invalidIndexes.length > 0
+      ) {
         return reply(
           `선택할 수 있는 일정은 1번부터 ${pending.events.length}번까지야.`,
         );
@@ -89,7 +155,8 @@ export async function handleDriveCalendarFlow(
 
       selectedEvents =
         addCommand.indexes.map(
-          (index) => pending.events[index],
+          (index) =>
+            pending.events[index],
         );
     }
 
@@ -97,7 +164,9 @@ export async function handleDriveCalendarFlow(
     const duplicates: string[] = [];
     const failed: string[] = [];
 
-    for (const candidate of selectedEvents) {
+    for (
+      const candidate of selectedEvents
+    ) {
       const calendarEvent =
         driveCandidateToCalendarEvent(
           candidate,
@@ -142,7 +211,9 @@ export async function handleDriveCalendarFlow(
           calendarEvent,
         );
 
-        added.push(calendarEvent.title);
+        added.push(
+          calendarEvent.title,
+        );
       } catch (error) {
         console.error(
           "[Drive Calendar] Failed:",
@@ -150,7 +221,9 @@ export async function handleDriveCalendarFlow(
           error,
         );
 
-        failed.push(candidate.title);
+        failed.push(
+          candidate.title,
+        );
       }
     }
 
@@ -158,9 +231,17 @@ export async function handleDriveCalendarFlow(
      * 전체 등록이면 후보 작업 종료.
      * 번호 선택은 추가 선택을 이어서 할 수 있도록 유지.
      */
-    if (addCommand.kind === "all") {
+    if (
+      addCommand.kind === "all"
+    ) {
       clearPendingDriveCalendar(
         sessionId,
+      );
+
+      await deleteMemory(
+        sessionId,
+        "action",
+        "pending_calendar_candidates",
       );
     }
 
@@ -176,7 +257,9 @@ export async function handleDriveCalendarFlow(
       );
     }
 
-    if (duplicates.length > 0) {
+    if (
+      duplicates.length > 0
+    ) {
       if (output.length > 0) {
         output.push("");
       }
@@ -204,7 +287,9 @@ export async function handleDriveCalendarFlow(
       );
     }
 
-    if (output.length === 0) {
+    if (
+      output.length === 0
+    ) {
       return reply(
         "추가할 일정이 없었어.",
       );
@@ -220,7 +305,9 @@ export async function handleDriveCalendarFlow(
    */
 
   const command =
-    parseDriveCalendarCommand(message);
+    parseDriveCalendarCommand(
+      message,
+    );
 
   if (!command) {
     /*
@@ -266,12 +353,13 @@ export async function handleDriveCalendarFlow(
       );
 
     const partialMatch =
-      files.find((file) =>
-        file.name
-          .toLowerCase()
-          .includes(
-            normalizedQuery,
-          ),
+      files.find(
+        (file) =>
+          file.name
+            .toLowerCase()
+            .includes(
+              normalizedQuery,
+            ),
       );
 
     const file =
@@ -287,17 +375,22 @@ export async function handleDriveCalendarFlow(
     /*
      * 이후 "그 문서" 질문도 가능하게 저장
      */
-    saveDriveContext(sessionId, {
-      fileId,
-      fileName,
-      webViewLink,
-    });
+    saveDriveContext(
+      sessionId,
+      {
+        fileId,
+        fileName,
+        webViewLink,
+      },
+    );
   } else {
     /*
      * "그 문서에서 일정 찾아줘" 같은 후속 명령
      */
     const context =
-      getDriveContext(sessionId);
+      getDriveContext(
+        sessionId,
+      );
 
     if (!context) {
       return reply(
@@ -305,8 +398,12 @@ export async function handleDriveCalendarFlow(
       );
     }
 
-    fileId = context.fileId;
-    fileName = context.fileName;
+    fileId =
+      context.fileId;
+
+    fileName =
+      context.fileName;
+
     webViewLink =
       context.webViewLink;
   }
@@ -315,7 +412,9 @@ export async function handleDriveCalendarFlow(
    * 실제 Drive 파일 읽기
    */
   const text =
-    await readGoogleDriveFile(fileId);
+    await readGoogleDriveFile(
+      fileId,
+    );
 
   if (!text) {
     return reply(
@@ -332,7 +431,9 @@ export async function handleDriveCalendarFlow(
       text,
     );
 
-  if (events.length === 0) {
+  if (
+    events.length === 0
+  ) {
     return reply(
       formatDriveCalendarCandidates(
         fileName,
@@ -342,7 +443,8 @@ export async function handleDriveCalendarFlow(
   }
 
   /*
-   * 사용자가 번호를 선택할 수 있도록 세션에 저장
+   * 사용자가 번호를 선택할 수 있도록
+   * RAM에 후보 저장
    */
   setPendingDriveCalendar(
     sessionId,
@@ -351,6 +453,32 @@ export async function handleDriveCalendarFlow(
       fileName,
       webViewLink,
       events,
+    },
+  );
+
+  /*
+   * 서버를 재시작해도 후보를 복원할 수 있도록
+   * Supabase 통합 Memory에도 저장
+   */
+  saveMemory(
+    sessionId,
+    "action",
+    "pending_calendar_candidates",
+    {
+      fileId,
+      fileName,
+      webViewLink,
+      events,
+    },
+  );
+
+  console.log(
+    "[L-AI Memory] Saved Drive Calendar candidates:",
+    {
+      sessionId,
+      fileName,
+      events:
+        events.length,
     },
   );
 
