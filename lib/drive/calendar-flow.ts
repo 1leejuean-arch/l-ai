@@ -131,174 +131,296 @@ export async function handleDriveCalendarFlow(
     parseDriveCalendarAddCommand(message);
 
   if (pending && addCommand) {
-    let selectedEvents =
-      pending.events;
+  let selectedIndexes: number[];
+
+  if (addCommand.kind === "all") {
+    selectedIndexes =
+      pending.events.map(
+        (_, index) => index,
+      );
+  } else {
+    const invalidIndexes =
+      addCommand.indexes.filter(
+        (index) =>
+          index < 0 ||
+          index >=
+            pending.events.length,
+      );
 
     if (
-      addCommand.kind === "selected"
+      invalidIndexes.length > 0
     ) {
-      const invalidIndexes =
-        addCommand.indexes.filter(
-          (index) =>
-            index < 0 ||
-            index >=
-              pending.events.length,
-        );
-
-      if (
-        invalidIndexes.length > 0
-      ) {
-        return reply(
-          `선택할 수 있는 일정은 1번부터 ${pending.events.length}번까지야.`,
-        );
-      }
-
-      selectedEvents =
-        addCommand.indexes.map(
-          (index) =>
-            pending.events[index],
-        );
+      return reply(
+        `선택할 수 있는 일정은 1번부터 ${pending.events.length}번까지야.`,
+      );
     }
 
-    const added: string[] = [];
-    const duplicates: string[] = [];
-    const failed: string[] = [];
+    selectedIndexes =
+      addCommand.indexes;
+  }
 
-    for (
-      const candidate of selectedEvents
-    ) {
-      const calendarEvent =
-        driveCandidateToCalendarEvent(
-          candidate,
-        );
+  const added: string[] = [];
+  const duplicates: string[] = [];
+  const failed: string[] = [];
 
-      try {
-        /*
-         * 먼저 해당 날짜의 기존 일정 조회
-         */
-        const range =
-          getCalendarCheckRange(
-            calendarEvent,
-          );
+  /*
+   * 처리 완료된 후보의 기존 index.
+   *
+   * 성공적으로 추가됐거나
+   * 이미 Calendar에 존재하는 후보는
+   * pending 목록에서 제거한다.
+   *
+   * 실패한 후보는 다시 시도할 수 있도록 유지한다.
+   */
+  const resolvedIndexes =
+    new Set<number>();
 
-        const existingEvents =
-          await callCalendarN8n(
-            "calendar_get",
-            range,
-          );
+  for (
+    const index of selectedIndexes
+  ) {
+    const candidate =
+      pending.events[index];
 
-        /*
-         * 같은 제목 + 같은 시작시간이면 중복
-         */
-        if (
-          isDuplicateCalendarEvent(
-            calendarEvent,
-            existingEvents,
-          )
-        ) {
-          duplicates.push(
-            calendarEvent.title,
-          );
+    const calendarEvent =
+      driveCandidateToCalendarEvent(
+        candidate,
+      );
 
-          continue;
-        }
-
-        /*
-         * 실제 Google Calendar 등록
-         */
-        await callCalendarN8n(
-          "calendar_create",
+    try {
+      /*
+       * 해당 날짜의 기존 일정 조회
+       */
+      const range =
+        getCalendarCheckRange(
           calendarEvent,
         );
 
-        added.push(
+      const existingEvents =
+        await callCalendarN8n(
+          "calendar_get",
+          range,
+        );
+
+      /*
+       * 이미 존재하는 일정이면
+       * 중복으로 처리하고 후보에서는 제거.
+       */
+      if (
+        isDuplicateCalendarEvent(
+          calendarEvent,
+          existingEvents,
+        )
+      ) {
+        duplicates.push(
           calendarEvent.title,
         );
-      } catch (error) {
-        console.error(
-          "[Drive Calendar] Failed:",
-          candidate.title,
-          error,
+
+        resolvedIndexes.add(
+          index,
         );
 
-        failed.push(
-          candidate.title,
-        );
+        continue;
       }
+
+      /*
+       * 실제 Google Calendar 등록
+       */
+      await callCalendarN8n(
+        "calendar_create",
+        calendarEvent,
+      );
+
+      added.push(
+        calendarEvent.title,
+      );
+
+      resolvedIndexes.add(
+        index,
+      );
+    } catch (error) {
+      console.error(
+        "[Drive Calendar] Failed:",
+        candidate.title,
+        error,
+      );
+
+      /*
+       * 실패한 후보는 제거하지 않는다.
+       * 나중에 다시 추가할 수 있다.
+       */
+      failed.push(
+        candidate.title,
+      );
     }
+  }
+
+  /*
+   * 성공 또는 중복 처리된 후보 제거
+   */
+  const remainingEvents =
+    pending.events.filter(
+      (_, index) =>
+        !resolvedIndexes.has(index),
+    );
+
+  /*
+   * 남은 후보가 없으면
+   * RAM + Supabase Memory 모두 정리
+   */
+  if (
+    remainingEvents.length === 0
+  ) {
+    clearPendingDriveCalendar(
+      sessionId,
+    );
+
+    await deleteMemory(
+      sessionId,
+      "action",
+      "pending_calendar_candidates",
+    );
+
+    console.log(
+      "[L-AI Memory] Cleared Drive Calendar candidates:",
+      {
+        sessionId,
+        fileName:
+          pending.fileName,
+      },
+    );
+  } else {
+    /*
+     * 아직 후보가 남아있으면
+     * 남은 목록으로 RAM 갱신
+     */
+    setPendingDriveCalendar(
+      sessionId,
+      {
+        fileId:
+          pending.fileId,
+        fileName:
+          pending.fileName,
+        webViewLink:
+          pending.webViewLink,
+        events:
+          remainingEvents,
+      },
+    );
 
     /*
-     * 전체 등록이면 후보 작업 종료.
-     * 번호 선택은 추가 선택을 이어서 할 수 있도록 유지.
+     * Supabase 통합 Memory도
+     * 동일하게 갱신
      */
-    if (
-      addCommand.kind === "all"
-    ) {
-      clearPendingDriveCalendar(
+    saveMemory(
+      sessionId,
+      "action",
+      "pending_calendar_candidates",
+      {
+        fileId:
+          pending.fileId,
+        fileName:
+          pending.fileName,
+        webViewLink:
+          pending.webViewLink,
+        events:
+          remainingEvents,
+      },
+    );
+
+    console.log(
+      "[L-AI Memory] Updated Drive Calendar candidates:",
+      {
         sessionId,
-      );
-
-      await deleteMemory(
-        sessionId,
-        "action",
-        "pending_calendar_candidates",
-      );
-    }
-
-    const output: string[] = [];
-
-    if (added.length > 0) {
-      output.push(
-        `**${added.length}개의 일정을 Calendar에 추가했어 ✅**`,
-        "",
-        ...added.map(
-          (title) => `- ${title}`,
-        ),
-      );
-    }
-
-    if (
-      duplicates.length > 0
-    ) {
-      if (output.length > 0) {
-        output.push("");
-      }
-
-      output.push(
-        `**이미 등록되어 있어서 건너뛴 일정 ${duplicates.length}개**`,
-        "",
-        ...duplicates.map(
-          (title) => `- ${title}`,
-        ),
-      );
-    }
-
-    if (failed.length > 0) {
-      if (output.length > 0) {
-        output.push("");
-      }
-
-      output.push(
-        `**등록에 실패한 일정 ${failed.length}개**`,
-        "",
-        ...failed.map(
-          (title) => `- ${title}`,
-        ),
-      );
-    }
-
-    if (
-      output.length === 0
-    ) {
-      return reply(
-        "추가할 일정이 없었어.",
-      );
-    }
-
-    return reply(
-      output.join("\n"),
+        fileName:
+          pending.fileName,
+        remaining:
+          remainingEvents.length,
+      },
     );
   }
+
+  const output: string[] = [];
+
+  if (added.length > 0) {
+    output.push(
+      `**${added.length}개의 일정을 Calendar에 추가했어 ✅**`,
+      "",
+      ...added.map(
+        (title) =>
+          `- ${title}`,
+      ),
+    );
+  }
+
+  if (
+    duplicates.length > 0
+  ) {
+    if (output.length > 0) {
+      output.push("");
+    }
+
+    output.push(
+      `**이미 등록되어 있어서 건너뛴 일정 ${duplicates.length}개**`,
+      "",
+      ...duplicates.map(
+        (title) =>
+          `- ${title}`,
+      ),
+    );
+  }
+
+  if (failed.length > 0) {
+    if (output.length > 0) {
+      output.push("");
+    }
+
+    output.push(
+      `**등록에 실패한 일정 ${failed.length}개**`,
+      "",
+      ...failed.map(
+        (title) =>
+          `- ${title}`,
+      ),
+    );
+  }
+
+  /*
+   * 남은 후보가 있다면
+   * 새 번호 기준으로 알려준다.
+   */
+  if (
+    remainingEvents.length > 0
+  ) {
+    if (output.length > 0) {
+      output.push("");
+    }
+
+    output.push(
+      `남은 일정 후보는 **${remainingEvents.length}개**야.`,
+      "남은 후보는 다시 1번부터 번호가 매겨져.",
+    );
+  } else {
+    if (output.length > 0) {
+      output.push("");
+    }
+
+    output.push(
+      "처리할 일정 후보가 모두 끝났어.",
+    );
+  }
+
+  if (
+    output.length === 0
+  ) {
+    return reply(
+      "추가할 일정이 없었어.",
+    );
+  }
+
+  return reply(
+    output.join("\n"),
+  );
+}
 
   /*
    * 2. Drive 문서에서 일정 찾기 명령

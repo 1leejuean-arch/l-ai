@@ -3,7 +3,8 @@ import { getMemory } from "@/lib/memory/context";
 import {
   getCalendarCheckRange,
   isDuplicateCalendarEvent,
-} from "@/lib/drive/calendar-register";import { routeUserMessage } from "@/lib/ai/router";
+} from "@/lib/drive/calendar-register";
+import { routeUserMessage } from "@/lib/ai/router";
 import {
   clearCalendarContext,
   getCalendarContext,
@@ -1104,6 +1105,15 @@ if (
     );
   }
 }
+const earlyDriveCalendarResponse =
+  await handleDriveCalendarFlow(
+    message,
+    sessionId,
+  );
+
+if (earlyDriveCalendarResponse) {
+  return earlyDriveCalendarResponse;
+}
 let routedMessage:
   | Awaited<ReturnType<typeof routeUserMessage>>
   | null = null;
@@ -1349,15 +1359,7 @@ if (
     `**${savedDriveContext.fileName}에서 이어서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
   );
 }
-const driveCalendarResponse =
-  await handleDriveCalendarFlow(
-    message,
-    sessionId,
-  );
 
-if (driveCalendarResponse) {
-  return driveCalendarResponse;
-}
  const driveIntent = parseDriveSearchIntent(message);
 
 if (driveIntent) {
