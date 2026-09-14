@@ -82,6 +82,7 @@ async function callDriveWebhook(
 }
 
 export async function searchGoogleDrive(query: string) {
+  console.log("[Drive Search] query:", query);
   const response = await callDriveWebhook("search", {
     query,
   });

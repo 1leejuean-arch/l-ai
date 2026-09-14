@@ -25,8 +25,13 @@ type StoredMemoryRow = {
 const memoryCache =
   new Map<string, MemoryRecord>();
 
-const MEMORY_TTL_MS =
+const DEFAULT_MEMORY_TTL_MS =
   1000 * 60 * 60 * 24 * 7;
+
+export type MemoryPersistenceStatus =
+  | "persisted"
+  | "memory_only"
+  | "failed";
 
 function getCacheKey(
   sessionId: string,
@@ -82,14 +87,14 @@ function isStoredMemoryRow(
 
 async function persistMemory<T>(
   record: MemoryRecord<T>,
-) {
+): Promise<MemoryPersistenceStatus> {
   const config = getSupabaseConfig();
 
   if (!config) {
     console.warn(
       "[L-AI Memory] Supabase configuration missing. Using memory only.",
     );
-    return;
+    return "memory_only";
   }
 
   try {
@@ -122,16 +127,22 @@ async function persistMemory<T>(
         response.status,
         await response.text(),
       );
+
+      return "failed";
     }
+
+    return "persisted";
   } catch (error) {
     console.error(
       "[L-AI Memory] Save request failed:",
       error,
     );
+
+    return "failed";
   }
 }
 
-export function saveMemory<T>(
+function cacheMemory<T>(
   sessionId: string,
   memoryType: MemoryType,
   memoryKey: string,
@@ -154,13 +165,46 @@ export function saveMemory<T>(
     record,
   );
 
+  return record;
+}
+
+export function saveMemory<T>(
+  sessionId: string,
+  memoryType: MemoryType,
+  memoryKey: string,
+  memoryValue: T,
+) {
+  const record = cacheMemory(
+    sessionId,
+    memoryType,
+    memoryKey,
+    memoryValue,
+  );
+
   void persistMemory(record);
+}
+
+export async function saveMemoryAndWait<T>(
+  sessionId: string,
+  memoryType: MemoryType,
+  memoryKey: string,
+  memoryValue: T,
+) {
+  const record = cacheMemory(
+    sessionId,
+    memoryType,
+    memoryKey,
+    memoryValue,
+  );
+
+  return persistMemory(record);
 }
 
 export async function getMemory<T>(
   sessionId: string,
   memoryType: MemoryType,
   memoryKey: string,
+  ttlMs = DEFAULT_MEMORY_TTL_MS,
 ): Promise<T | null> {
   const cacheKey =
     getCacheKey(
@@ -172,12 +216,30 @@ export async function getMemory<T>(
   const cached =
     memoryCache.get(cacheKey);
 
-  if (
-    cached &&
-    Date.now() - cached.updatedAt <=
-      MEMORY_TTL_MS
-  ) {
-    return cached.memoryValue as T;
+  if (cached) {
+    if (
+      Date.now() - cached.updatedAt <=
+      ttlMs
+    ) {
+      return cached.memoryValue as T;
+    }
+
+    console.log(
+      "[L-AI Memory] Ignored expired memory:",
+      {
+        sessionId,
+        memoryType,
+        memoryKey,
+      },
+    );
+
+    await deleteMemory(
+      sessionId,
+      memoryType,
+      memoryKey,
+    );
+
+    return null;
   }
 
   const config = getSupabaseConfig();
@@ -234,8 +296,23 @@ export async function getMemory<T>(
     if (
       !Number.isFinite(updatedAt) ||
       Date.now() - updatedAt >
-        MEMORY_TTL_MS
+        ttlMs
     ) {
+      console.log(
+        "[L-AI Memory] Ignored expired memory:",
+        {
+          sessionId,
+          memoryType,
+          memoryKey,
+        },
+      );
+
+      await deleteMemory(
+        sessionId,
+        memoryType,
+        memoryKey,
+      );
+
       return null;
     }
 

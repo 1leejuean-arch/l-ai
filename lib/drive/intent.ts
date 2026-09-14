@@ -44,11 +44,47 @@ function normalizeFileQuery(query: string) {
 }
 
 function cleanDriveQuery(message: string) {
-  return removeDriveContext(message)
-    .replace(SUMMARY_COMMAND_PATTERN, "")
-    .replace(SEARCH_COMMAND_PATTERN, "")
-    .replace(/\s+(?:관련\s*)?(?:파일|문서)(?:을|를)?\s*$/u, "")
-    .replace(/^[\s'"]+|[\s?'".!。！？]+$/gu, "")
+  const cleaned =
+    removeDriveContext(message);
+
+  return cleaned
+    // 요약 관련 명령 제거
+    .replace(
+      /(?:요약해\s*줘|요약해줘|요약\s*해줘|요약해|요약)\s*$/u,
+      "",
+    )
+
+    // 검색 관련 명령 제거
+    .replace(
+      /(?:찾아\s*줘|찾아줘|검색해\s*줘|검색해줘|검색해|검색|보여\s*줘|보여줘|찾아|보여)\s*$/u,
+      "",
+    )
+
+    // 확장자 뒤에 붙은 조사 제거
+    // 예: 대의원회의.pdf를 -> 대의원회의.pdf
+    .replace(
+      /(\.(?:pdf|pptx|docx|xlsx|csv|txt))(?:을|를|이|가|은|는|의|에서|으로|로)\s*$/giu,
+      "$1",
+    )
+
+    // 파일/문서 + 조사 제거
+    .replace(
+      /\s*(?:파일|문서)(?:을|를|이|가|은|는|의|에서|으로|로)?\s*$/u,
+      "",
+    )
+
+    // 앞쪽 파일/문서 표현 제거
+    .replace(
+      /^\s*(?:파일|문서)(?:을|를|이|가|은|는|의)?\s*/u,
+      "",
+    )
+
+    // 따옴표/문장부호 정리
+    .replace(
+      /^[\s"'`“”‘’.,!?]+|[\s"'`“”‘’.,!?]+$/gu,
+      "",
+    )
+
     .replace(/\s+/gu, " ")
     .trim();
 }

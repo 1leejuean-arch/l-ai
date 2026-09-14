@@ -1,4 +1,9 @@
 
+import {
+  getLastAction,
+  getLastActionRecency,
+  saveLastAction,
+} from "@/lib/memory/action";
 import { getMemory } from "@/lib/memory/context";
 import {
   getCalendarCheckRange,
@@ -69,6 +74,7 @@ import {
 } from "@/lib/calendar/session";
 import type {
   CalendarDeleteRequest,
+  CalendarEvent,
   CalendarEventCandidate,
   CalendarParseResult,
   CalendarRange,
@@ -155,6 +161,7 @@ const ACTION_APPROVAL_MESSAGES = {
 const CANCEL_MESSAGES = new Set([
   "취소",
   "취소해줘",
+  "ㄴㄴ",
   "아니",
   "아니요",
   "그만",
@@ -196,12 +203,140 @@ function parseSelectionIndex(message: string, candidateCount: number) {
     : null;
 }
 
+function isIndependentCommandWhileClarifying(
+  message: string,
+) {
+  const normalized =
+    normalizeShortReply(message);
+
+  if (
+    CANCEL_MESSAGES.has(normalized) ||
+    GENERIC_APPROVAL_MESSAGES.has(normalized) ||
+    isActionApproval(normalized) ||
+    /^(?:\d+\s*번?|첫\s*번째|두\s*번째|세\s*번째|첫째|둘째|셋째)$/u.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+
+  const hasExplicitDateOrTime =
+    /(?:오늘|내일|모레|이번\s*주|다음\s*주|\d{1,2}\s*월|\d{1,2}\s*일|(?:월|화|수|목|금|토|일)요일|오전|오후|\d{1,2}\s*시|\d{1,2}:\d{2})/u.test(
+      normalized,
+    );
+
+  const isLastActionCommand =
+    isLastActionDirectCommand(
+      normalized,
+    );
+
+  const isCalendarCreateCommand =
+    hasExplicitDateOrTime &&
+    /(?:추가|등록|만들어|생성)/u.test(
+      normalized,
+    );
+
+  const isCalendarGetCommand =
+    /(?=.*(?:일정|스케줄))(?=.*(?:보여|조회|알려|확인|뭐\s*있))/u.test(
+      normalized,
+    );
+
+  const isCalendarDeleteCommand =
+    /(?=.*(?:일정|스케줄))(?=.*(?:삭제|지워|없애))/u.test(
+      normalized,
+    );
+
+  const isCalendarUpdateCommand =
+    hasExplicitDateOrTime &&
+    /(?=.*(?:일정|스케줄))(?=.*(?:수정|변경|바꿔|옮겨|미뤄|당겨))/u.test(
+      normalized,
+    );
+
+  const isDriveCommand =
+    /(?=.*(?:드라이브|파일|\.[a-z0-9]{2,5}))(?=.*(?:찾아|검색|요약|읽어|내용|열어))/iu.test(
+      normalized,
+    );
+
+  return (
+    isLastActionCommand ||
+    isCalendarCreateCommand ||
+    isCalendarGetCommand ||
+    isCalendarDeleteCommand ||
+    isCalendarUpdateCommand ||
+    isDriveCommand
+  );
+}
+
+function isLastActionDirectCommand(
+  message: string,
+) {
+  return /(?:방금|아까|최근에).*(?:뭐|무엇|알려|뭐였|취소|되돌려|원래대로|삭제|지워)/u.test(
+    message,
+  );
+}
+
+function getExplicitMemoryTarget(
+  message: string,
+) {
+  if (/(?:파일|문서|드라이브)/u.test(message)) {
+    return "drive_context" as const;
+  }
+
+  if (/(?:일정|캘린더|달력)/u.test(message)) {
+    return "calendar_context" as const;
+  }
+
+  return null;
+}
+
 function chatReply(reply: string) {
   return Response.json({ reply } satisfies ChatApiResponse);
 }
 
 function chatError(error: string, status: number) {
   return Response.json({ error } satisfies ChatApiError, { status });
+}
+
+function getStoredCalendarEvent(
+  value: unknown,
+): CalendarEvent | null {
+  if (
+    typeof value !== "object" ||
+    value === null
+  ) {
+    return null;
+  }
+
+  const event =
+    value as Record<string, unknown>;
+
+  if (
+    typeof event.title !== "string" ||
+    !event.title.trim() ||
+    typeof event.start !== "string" ||
+    !event.start.trim() ||
+    typeof event.end !== "string" ||
+    !event.end.trim()
+  ) {
+    return null;
+  }
+
+  return {
+    title: event.title,
+    start: event.start,
+    end: event.end,
+  };
+}
+
+function isSameCalendarEvent(
+  left: CalendarEvent | null,
+  right: CalendarEvent,
+) {
+  return (
+    left?.title === right.title &&
+    left.start === right.start &&
+    left.end === right.end
+  );
 }
 
 function isConfirmation(
@@ -265,6 +400,46 @@ async function handleDriveSearch(
   try {
     const files = await searchGoogleDrive(query);
 
+    if (files.length > 0) {
+      const normalizedQuery =
+        query.toLowerCase().trim();
+
+      const matchedFile =
+        files.find(
+          (file) =>
+            file.name
+              .toLowerCase()
+              .trim() ===
+            normalizedQuery,
+        ) ??
+        (files.length === 1
+          ? files[0]
+          : null);
+
+      await saveLastAction(
+        sessionId,
+        {
+          type: "drive_search",
+          label: matchedFile
+            ? `${matchedFile.name} 파일 검색`
+            : `${query} 파일 검색`,
+          data: matchedFile
+            ? {
+                fileId: matchedFile.id,
+                fileName: matchedFile.name,
+                webViewLink:
+                  matchedFile.webViewLink,
+                query,
+              }
+            : {
+                query,
+                resultCount:
+                  files.length,
+              },
+        },
+      );
+    }
+
     if (files.length === 1) {
       const file = files[0];
 
@@ -300,6 +475,14 @@ async function executePendingAction(sessionId: string) {
       "확인할 일정 작업이 없습니다.",
     );
   }
+
+  console.log(
+    "[L-AI Memory] Priority selected: calendar_pending",
+    {
+      sessionId,
+      pendingKind: pending.kind,
+    },
+  );
 
   try {
     if (pending.kind === "create") {
@@ -353,6 +536,23 @@ async function executePendingAction(sessionId: string) {
     pending.event,
   );
 
+await saveLastAction(
+  sessionId,
+  {
+    type: "calendar_create",
+    label:
+      `${pending.event.title} 일정 추가`,
+    data: {
+      title:
+        pending.event.title,
+      start:
+        pending.event.start,
+      end:
+        pending.event.end,
+    },
+  },
+);
+
   saveCalendarContext(
     sessionId,
     {
@@ -376,44 +576,150 @@ async function executePendingAction(sessionId: string) {
       pending.event,
     ),
   );
-}
-
-    if (pending.kind === "update") {
-      await callCalendarN8n(
-        "calendar_update",
-        {
-          eventId: pending.eventId,
-          ...pending.after,
-        },
-      );
-
-      saveCalendarContext(sessionId, {
-        rangeLabel: "방금 수정한 일정",
-        events: [
-          {
-            title: pending.after.title,
-            start: pending.after.start,
-            end: pending.after.end,
-          },
-        ],
-      });
-
-      return chatReply(
-        formatCalendarUpdated(
-          pending.after,
-        ),
-      );
     }
 
-    await callCalendarN8n(
-      "calendar_delete",
-      {
-        eventId:
-          pending.candidate.eventId,
-      },
+    if (pending.kind === "update") {
+  const previousLastAction =
+    await getLastAction(sessionId);
+
+  const previousActionData =
+    previousLastAction?.data;
+
+  const previousBefore =
+    getStoredCalendarEvent(
+      previousActionData?.before,
     );
 
-    clearCalendarContext(sessionId);
+  const previousAfter =
+    getStoredCalendarEvent(
+      previousActionData?.after,
+    ) ??
+    getStoredCalendarEvent({
+      title:
+        previousActionData?.title,
+      start:
+        previousActionData?.start,
+      end:
+        previousActionData?.end,
+    });
+
+  const isRollback =
+    previousLastAction?.type ===
+      "calendar_update" &&
+    previousActionData?.eventId ===
+      pending.eventId &&
+    isSameCalendarEvent(
+      previousBefore,
+      pending.after,
+    ) &&
+    isSameCalendarEvent(
+      previousAfter,
+      pending.before,
+    );
+
+  await callCalendarN8n(
+    "calendar_update",
+    {
+      eventId: pending.eventId,
+      ...pending.after,
+    },
+  );
+
+  await saveLastAction(
+    sessionId,
+    {
+      type: "calendar_update",
+      label:
+        isRollback
+          ? `${pending.after.title} 일정 수정 되돌리기`
+          : `${pending.after.title} 일정 수정`,
+      data: {
+        eventId:
+          pending.eventId,
+
+        title:
+          pending.after.title,
+
+        start:
+          pending.after.start,
+
+        end:
+          pending.after.end,
+
+        before: {
+          title:
+            pending.before.title,
+          start:
+            pending.before.start,
+          end:
+            pending.before.end,
+        },
+
+        after: {
+          title:
+            pending.after.title,
+          start:
+            pending.after.start,
+          end:
+            pending.after.end,
+        },
+      },
+    },
+  );
+
+  saveCalendarContext(
+    sessionId,
+    {
+      rangeLabel:
+        "방금 수정한 일정",
+      events: [
+        {
+          title:
+            pending.after.title,
+          start:
+            pending.after.start,
+          end:
+            pending.after.end,
+        },
+      ],
+    },
+  );
+
+  return chatReply(
+    formatCalendarUpdated(
+      pending.after,
+    ),
+  );
+}
+
+    await callCalendarN8n(
+  "calendar_delete",
+  {
+    eventId:
+      pending.candidate.eventId,
+  },
+);
+
+await saveLastAction(
+  sessionId,
+  {
+    type: "calendar_delete",
+    label:
+      `${pending.candidate.title} 일정 삭제`,
+    data: {
+      eventId:
+        pending.candidate.eventId,
+      title:
+        pending.candidate.title,
+      start:
+        pending.candidate.start,
+      end:
+        pending.candidate.end,
+    },
+  },
+);
+
+clearCalendarContext(sessionId);
 
     return chatReply(
       formatCalendarDeleted(),
@@ -736,6 +1042,13 @@ function resolveCalendarReferenceMessage(
     return message;
   }
 
+  console.log(
+    "[L-AI Memory] Priority selected: calendar_context",
+    {
+      sessionId,
+    },
+  );
+
   const event = context.events[0];
 
   const requestWithoutReference =
@@ -892,6 +1205,14 @@ if (
   driveToCalendarPattern.test(rawMessage)
 ) {
   console.log(
+    "[L-AI Memory] Priority selected: drive_context",
+    {
+      sessionId,
+      fileName: rememberedDriveFile.fileName,
+    },
+  );
+
+  console.log(
     "[L-AI Memory] Drive → Calendar cross-context:",
     {
       sessionId,
@@ -923,7 +1244,7 @@ if (N8N_TEST_MESSAGES.has(message)) {
 const rawShortReply =
   normalizeShortReply(rawMessage);
 
-const rawPending =
+let rawPending =
   getPendingCalendarAction(sessionId);
 
 /*
@@ -939,11 +1260,41 @@ if (CANCEL_MESSAGES.has(rawShortReply)) {
     );
   }
 
+  console.log(
+    "[L-AI Memory] Priority selected: calendar_pending",
+    {
+      sessionId,
+      pendingKind: rawPending.kind,
+    },
+  );
+
   clearPendingCalendarAction(sessionId);
 
   return chatReply(
     "Calendar 작업을 취소했어.",
   );
+}
+
+if (
+  (
+    rawPending?.kind === "clarify_update" ||
+    rawPending?.kind === "clarify_request"
+  ) &&
+  isIndependentCommandWhileClarifying(
+    rawMessage,
+  )
+) {
+  console.log(
+    "[Calendar Pending] Cleared stale clarification for a new command:",
+    {
+      sessionId,
+      pendingKind: rawPending.kind,
+      rawMessage,
+    },
+  );
+
+  clearPendingCalendarAction(sessionId);
+  rawPending = null;
 }
 
 if (rawPending?.kind === "clarify_update") {
@@ -991,9 +1342,15 @@ if (
     return selectionResponse;
   }
 
-  return chatReply(
-    expectedApprovalMessage(rawPending),
-  );
+  if (
+    !isLastActionDirectCommand(
+      rawMessage,
+    )
+  ) {
+    return chatReply(
+      expectedApprovalMessage(rawPending),
+    );
+  }
 }
 
 if (rawPending && isConfirmation(rawPending)) {
@@ -1006,9 +1363,15 @@ if (rawPending && isConfirmation(rawPending)) {
     return executePendingAction(sessionId);
   }
 
-  return chatReply(
-    expectedApprovalMessage(rawPending),
-  );
+  if (
+    !isLastActionDirectCommand(
+      rawMessage,
+    )
+  ) {
+    return chatReply(
+      expectedApprovalMessage(rawPending),
+    );
+  }
 }
 
 if (
@@ -1017,6 +1380,238 @@ if (
 ) {
   return chatReply(
     "확인할 일정 작업이 없습니다.",
+  );
+}
+
+const lastActionQuestionPattern =
+  /(?:방금|아까|최근에).*(?:뭐|무엇).*(?:했|한)|(?:방금|아까|최근에).*(?:작업|한\s*거).*(?:알려|뭐였)/u;
+
+const lastActionRecency =
+  getLastActionRecency(
+    rawMessage,
+  );
+
+if (
+  lastActionQuestionPattern.test(
+    rawMessage,
+  )
+) {
+  const lastAction =
+    await getLastAction(
+      sessionId,
+      lastActionRecency,
+    );
+
+  if (!lastAction) {
+    return chatReply(
+      "최근에 기억하고 있는 작업이 없어.",
+    );
+  }
+
+  console.log(
+    "[L-AI Memory] Priority selected: last_action",
+    {
+      sessionId,
+      type: lastAction.type,
+    },
+  );
+
+  return chatReply(
+    `방금 기억하고 있는 작업은 **${lastAction.label}**이야.`,
+  );
+}
+const lastActionRollbackPattern =
+  /(?:방금|아까|최근(?:에)?).*(?:수정|바꾼|변경).*(?:되돌려|원래대로|취소)/u;
+
+if (
+  lastActionRollbackPattern.test(
+    rawMessage,
+  )
+) {
+  const lastAction =
+    await getLastAction(
+      sessionId,
+      lastActionRecency,
+    );
+
+  if (!lastAction) {
+    return chatReply(
+      "최근에 되돌릴 수정 작업을 기억하고 있지 않아.",
+    );
+  }
+
+  console.log(
+    "[L-AI Memory] Priority selected: last_action",
+    {
+      sessionId,
+      type: lastAction.type,
+    },
+  );
+
+  if (
+    lastAction.type !==
+    "calendar_update"
+  ) {
+    return chatReply(
+      `최근 작업은 **${lastAction.label}**이지만, 일정 수정 작업이 아니라서 되돌릴 수 없어.`,
+    );
+  }
+
+  const eventId =
+    typeof lastAction.data?.eventId ===
+    "string" &&
+    lastAction.data.eventId.trim()
+      ? lastAction.data.eventId
+      : null;
+
+  const before =
+    getStoredCalendarEvent(
+      lastAction.data?.before,
+    );
+
+  const after =
+    getStoredCalendarEvent(
+      lastAction.data?.after,
+    ) ??
+    getStoredCalendarEvent({
+      title: lastAction.data?.title,
+      start: lastAction.data?.start,
+      end: lastAction.data?.end,
+    });
+
+  if (
+    !eventId ||
+    !before ||
+    !after
+  ) {
+    return chatReply(
+      "최근 일정 수정 정보가 부족해서 되돌릴 수 없어.",
+    );
+  }
+
+  setPendingCalendarAction(
+    sessionId,
+    {
+      kind: "update",
+      eventId,
+      before: after,
+      after: before,
+    },
+  );
+
+  const confirmation =
+    formatCalendarUpdateConfirmation(
+      after,
+      before,
+    );
+
+  return chatReply(
+    confirmation.replace(
+      "다음 일정을 수정할까요?",
+      "이 일정 변경을 되돌릴까요?",
+    ),
+  );
+}
+const lastActionCancelPattern =
+  /(?:방금|아까|최근에).*(?:한\s*거|작업|일정).*(?:취소|되돌려|삭제|지워)/u;
+
+if (
+  lastActionCancelPattern.test(
+    rawMessage,
+  ) &&
+  getExplicitMemoryTarget(
+    rawMessage,
+  ) === null
+) {
+  const lastAction =
+    await getLastAction(
+      sessionId,
+      lastActionRecency,
+    );
+
+  if (!lastAction) {
+    return chatReply(
+      "최근에 취소할 작업을 기억하고 있지 않아.",
+    );
+  }
+
+  console.log(
+    "[L-AI Memory] Priority selected: last_action",
+    {
+      sessionId,
+      type: lastAction.type,
+    },
+  );
+
+  /*
+   * 현재는 방금 생성한 Calendar 일정의
+   * 취소부터 지원한다.
+   */
+  if (
+    lastAction.type !==
+    "calendar_create"
+  ) {
+    return chatReply(
+      `최근 작업은 **${lastAction.label}**이지만, 아직 이 작업은 자동으로 취소할 수 없어.`,
+    );
+  }
+
+  const title =
+    typeof lastAction.data?.title ===
+    "string"
+      ? lastAction.data.title
+      : null;
+
+  const start =
+    typeof lastAction.data?.start ===
+    "string"
+      ? lastAction.data.start
+      : null;
+
+  const end =
+    typeof lastAction.data?.end ===
+    "string"
+      ? lastAction.data.end
+      : start;
+
+  if (
+    !title ||
+    !start ||
+    !end
+  ) {
+    return chatReply(
+      "방금 생성한 일정 정보가 부족해서 자동으로 취소할 수 없어.",
+    );
+  }
+
+  const range =
+    getCalendarCheckRange({
+      title,
+      start,
+      end,
+    });
+
+  const deleteRequest:
+    CalendarDeleteRequest = {
+      range,
+      target: {
+        title,
+        start,
+      },
+    };
+
+  console.log(
+    "[L-AI Memory] Cancel last calendar action:",
+    {
+      sessionId,
+      title,
+      start,
+    },
+  );
+
+  return handleCalendarDelete(
+    sessionId,
+    deleteRequest,
   );
 }
 
@@ -1031,7 +1626,7 @@ const rememberedCalendarContext =
   getCalendarContext(sessionId);
 
 const rememberedCalendarReferencePattern =
-  /(?:그거|그걸|그\s*거|그\s*일정|저거|저걸|아까꺼|아까\s*거|아까\s*그거|아까\s*일정|방금꺼|방금\s*거|방금\s*그거|방금\s*일정|방금\s*만든\s*거|방금\s*수정한\s*거|전에\s*말한\s*거|아까\s*말한\s*거)/u;
+  /(?:그거|그걸|그\s*거|그\s*일정|저거|저걸|아까꺼|아까\s*거|아까\s*그거|아까\s*일정|아까\s*(?:만든|생성한|추가한|수정한)\s*일정|방금꺼|방금\s*거|방금\s*그거|방금\s*일정|방금\s*만든\s*거|방금\s*(?:만든|생성한|추가한|수정한)\s*일정|방금\s*수정한\s*거|전에\s*말한\s*거|아까\s*말한\s*거)/u;
 
 const calendarUpdateWordPattern =
   /(?:바꿔|변경|수정|옮겨|미뤄|당겨)/u;
@@ -1043,6 +1638,13 @@ if (
   rememberedCalendarContext?.events.length === 1 &&
   rememberedCalendarReferencePattern.test(rawMessage)
 ) {
+  console.log(
+    "[L-AI Memory] Priority selected: calendar_context",
+    {
+      sessionId,
+    },
+  );
+
   const targetEvent =
     rememberedCalendarContext.events[0];
 
@@ -1105,6 +1707,77 @@ if (
     );
   }
 }
+
+const savedDriveContext =
+  getDriveContext(sessionId);
+
+if (
+  savedDriveContext &&
+  isDriveContextFollowUp(message) &&
+  (
+    getExplicitMemoryTarget(rawMessage) ===
+      "drive_context" ||
+    !rememberedCalendarContext
+  )
+) {
+  console.log(
+    "[L-AI Memory] Priority selected: drive_context",
+    {
+      sessionId,
+      fileName: savedDriveContext.fileName,
+    },
+  );
+
+  const text = await readGoogleDriveFile(
+    savedDriveContext.fileId,
+  );
+
+  if (!text) {
+    return chatReply(
+      `'${savedDriveContext.fileName}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+    );
+  }
+
+  const answer = await answerDriveFileQuestion(
+    savedDriveContext.fileName,
+    text,
+    message,
+  );
+
+  const fileUrl =
+    savedDriveContext.webViewLink ||
+    `https://drive.google.com/open?id=${encodeURIComponent(
+      savedDriveContext.fileId,
+    )}`;
+
+  const isSummaryRequest =
+    /요약/u.test(rawMessage);
+
+  await saveLastAction(
+    sessionId,
+    {
+      type: isSummaryRequest
+        ? "drive_summary"
+        : "drive_read",
+      label: isSummaryRequest
+        ? `${savedDriveContext.fileName} 파일 요약`
+        : `${savedDriveContext.fileName} 내용 확인`,
+      data: {
+        fileId:
+          savedDriveContext.fileId,
+        fileName:
+          savedDriveContext.fileName,
+        webViewLink:
+          savedDriveContext.webViewLink,
+      },
+    },
+  );
+
+  return chatReply(
+    `**${savedDriveContext.fileName}에서 이어서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
+  );
+}
+
 const earlyDriveCalendarResponse =
   await handleDriveCalendarFlow(
     message,
@@ -1121,6 +1794,13 @@ let routedMessage:
 try {
   const driveContextForRouter =
     getDriveContext(sessionId);
+
+  console.log(
+    "[L-AI Memory] Priority selected: ai_router",
+    {
+      sessionId,
+    },
+  );
 
   routedMessage = await routeUserMessage(
     message,
@@ -1327,39 +2007,6 @@ if (
     );
   }
 }
-  const savedDriveContext = getDriveContext(sessionId);
-
-if (
-  savedDriveContext &&
-  isDriveContextFollowUp(message)
-) {
-  const text = await readGoogleDriveFile(
-    savedDriveContext.fileId,
-  );
-
-  if (!text) {
-    return chatReply(
-      `'${savedDriveContext.fileName}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-    );
-  }
-
-  const answer = await answerDriveFileQuestion(
-    savedDriveContext.fileName,
-    text,
-    message,
-  );
-
-  const fileUrl =
-    savedDriveContext.webViewLink ||
-    `https://drive.google.com/open?id=${encodeURIComponent(
-      savedDriveContext.fileId,
-    )}`;
-
-  return chatReply(
-    `**${savedDriveContext.fileName}에서 이어서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
-  );
-}
-
  const driveIntent = parseDriveSearchIntent(message);
 
 if (driveIntent) {
@@ -1609,7 +2256,22 @@ if (driveIntent) {
 
     const fileUrl =
       file.webViewLink ||
-      `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+        `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+
+    await saveLastAction(
+      sessionId,
+      {
+        type: "drive_summary",
+        label:
+          `${file.name} 파일 요약`,
+        data: {
+          fileId: file.id,
+          fileName: file.name,
+          webViewLink:
+            file.webViewLink,
+        },
+      },
+    );
 
     return chatReply(
       `**${file.name} 요약**\n\n${summary}\n\n[원본 파일 열기](${fileUrl})`,
@@ -1651,7 +2313,22 @@ if (driveIntent) {
 
     const fileUrl =
       file.webViewLink ||
-      `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+        `https://drive.google.com/open?id=${encodeURIComponent(file.id)}`;
+
+    await saveLastAction(
+      sessionId,
+      {
+        type: "drive_read",
+        label:
+          `${file.name} 내용 확인`,
+        data: {
+          fileId: file.id,
+          fileName: file.name,
+          webViewLink:
+            file.webViewLink,
+        },
+      },
+    );
 
     return chatReply(
       `**${file.name}에서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,

@@ -1,5 +1,8 @@
 import "server-only";
-import { saveMemory } from "@/lib/memory/context";
+import {
+  deleteMemory,
+  saveMemory,
+} from "@/lib/memory/context";
 type CalendarContextEvent = {
   title: string;
   start: string;
@@ -250,8 +253,23 @@ export async function hydrateCalendarContext(
       Date.now() - updatedAt >
         CONTEXT_TTL_MS
     ) {
+      console.log(
+        "[L-AI Memory] Ignored expired memory:",
+        {
+          sessionId,
+          memoryType: "calendar",
+          memoryKey: "recent_events",
+        },
+      );
+
       void deletePersistedCalendarContext(
         sessionId,
+      );
+
+      void deleteMemory(
+        sessionId,
+        "calendar",
+        "recent_events",
       );
 
       return;
@@ -338,12 +356,27 @@ export function getCalendarContext(
       context.updatedAt >
     CONTEXT_TTL_MS
   ) {
+    console.log(
+      "[L-AI Memory] Ignored expired memory:",
+      {
+        sessionId,
+        memoryType: "calendar",
+        memoryKey: "recent_events",
+      },
+    );
+
     calendarContexts.delete(
       sessionId,
     );
 
     void deletePersistedCalendarContext(
       sessionId,
+    );
+
+    void deleteMemory(
+      sessionId,
+      "calendar",
+      "recent_events",
     );
 
     return null;
@@ -361,5 +394,11 @@ export function clearCalendarContext(
 
   void deletePersistedCalendarContext(
     sessionId,
+  );
+
+  void deleteMemory(
+    sessionId,
+    "calendar",
+    "recent_events",
   );
 }

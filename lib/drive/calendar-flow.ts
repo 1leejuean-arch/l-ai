@@ -6,6 +6,7 @@ import {
   getMemory,
   saveMemory,
 } from "@/lib/memory/context";
+import { saveLastAction } from "@/lib/memory/action";
 
 import {
   extractCalendarEventsFromDriveFile,
@@ -14,6 +15,7 @@ import {
 
 import {
   clearPendingDriveCalendar,
+  DRIVE_CALENDAR_PENDING_TTL_MS,
   getPendingDriveCalendar,
   setPendingDriveCalendar,
 } from "./calendar-pending";
@@ -82,6 +84,7 @@ export async function handleDriveCalendarFlow(
         sessionId,
         "action",
         "pending_calendar_candidates",
+        DRIVE_CALENDAR_PENDING_TTL_MS,
       );
 
     if (persistedPending) {
@@ -131,6 +134,14 @@ export async function handleDriveCalendarFlow(
     parseDriveCalendarAddCommand(message);
 
   if (pending && addCommand) {
+  console.log(
+    "[L-AI Memory] Priority selected: pending_calendar_candidates",
+    {
+      sessionId,
+      fileName: pending.fileName,
+    },
+  );
+
   let selectedIndexes: number[];
 
   if (addCommand.kind === "all") {
@@ -228,6 +239,23 @@ export async function handleDriveCalendarFlow(
       await callCalendarN8n(
         "calendar_create",
         calendarEvent,
+      );
+
+      await saveLastAction(
+        sessionId,
+        {
+          type: "calendar_create",
+          label:
+            `${calendarEvent.title} 일정 추가`,
+          data: {
+            title:
+              calendarEvent.title,
+            start:
+              calendarEvent.start,
+            end:
+              calendarEvent.end,
+          },
+        },
       );
 
       added.push(
@@ -601,6 +629,22 @@ export async function handleDriveCalendarFlow(
       fileName,
       events:
         events.length,
+    },
+  );
+
+  await saveLastAction(
+    sessionId,
+    {
+      type:
+        "drive_calendar_extract",
+      label:
+        `${fileName} 일정 후보 추출`,
+      data: {
+        fileId,
+        fileName,
+        candidateCount:
+          events.length,
+      },
     },
   );
 

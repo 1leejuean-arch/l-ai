@@ -2,7 +2,8 @@ import "server-only";
 
 import type { PendingCalendarAction } from "./types";
 
-const PENDING_TTL_MS = 30 * 60 * 1000;
+const CALENDAR_PENDING_TTL_MS =
+  30 * 60 * 1000;
 
 type PendingCalendarEntry = {
   action: PendingCalendarAction;
@@ -25,7 +26,9 @@ export function setPendingCalendarAction(
 ) {
   pendingActions.set(sessionId, {
     action,
-    expiresAt: Date.now() + PENDING_TTL_MS,
+    expiresAt:
+      Date.now() +
+      CALENDAR_PENDING_TTL_MS,
   });
 }
 
@@ -38,6 +41,16 @@ export function getPendingCalendarAction(sessionId: string) {
 
   if (pending.expiresAt <= Date.now()) {
     pendingActions.delete(sessionId);
+
+    console.log(
+      "[L-AI Memory] Expired pending cleared:",
+      {
+        sessionId,
+        pendingKind:
+          pending.action.kind,
+      },
+    );
+
     return null;
   }
 

@@ -1,4 +1,7 @@
-import { saveMemory } from "@/lib/memory/context";
+import {
+  deleteMemory,
+  saveMemory,
+} from "@/lib/memory/context";
 import "server-only";
 type DriveConversationContext = {
   fileId: string;
@@ -215,8 +218,23 @@ export async function hydrateDriveContext(
       Date.now() - updatedAt >
         CONTEXT_TTL_MS
     ) {
+      console.log(
+        "[L-AI Memory] Ignored expired memory:",
+        {
+          sessionId,
+          memoryType: "drive",
+          memoryKey: "recent_file",
+        },
+      );
+
       void deletePersistedDriveContext(
         sessionId,
+      );
+
+      void deleteMemory(
+        sessionId,
+        "drive",
+        "recent_file",
       );
 
       return;
@@ -298,12 +316,27 @@ export function getDriveContext(
       context.updatedAt >
     CONTEXT_TTL_MS
   ) {
+    console.log(
+      "[L-AI Memory] Ignored expired memory:",
+      {
+        sessionId,
+        memoryType: "drive",
+        memoryKey: "recent_file",
+      },
+    );
+
     driveContexts.delete(
       sessionId,
     );
 
     void deletePersistedDriveContext(
       sessionId,
+    );
+
+    void deleteMemory(
+      sessionId,
+      "drive",
+      "recent_file",
     );
 
     return null;
@@ -329,5 +362,11 @@ export function clearDriveContext(
 
   void deletePersistedDriveContext(
     sessionId,
+  );
+
+  void deleteMemory(
+    sessionId,
+    "drive",
+    "recent_file",
   );
 }

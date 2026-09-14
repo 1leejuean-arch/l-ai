@@ -36,16 +36,19 @@ export function parseDriveCalendarAddCommand(
     };
   }
 
-  if (
-    !/(?:추가|등록|넣어)/u.test(
+  const selectedMatch =
+    /^(\d+(?:\s*번)?(?:\s*(?:,|과|와|이랑|랑|하고)\s*\d+(?:\s*번)?)*\s*번)\s*(?:일정\s*)?(?:추가(?:해\s*줘|해줘)?|등록(?:해\s*줘|해줘)?|넣어(?:\s*줘)?)$/u.exec(
       normalized,
-    )
-  ) {
+    );
+
+  if (!selectedMatch?.[1]) {
     return null;
   }
 
   const numberMatches =
-    normalized.match(/\d+/gu);
+    selectedMatch[1].match(
+      /\d+/gu,
+    );
 
   if (
     !numberMatches ||

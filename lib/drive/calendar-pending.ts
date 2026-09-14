@@ -13,7 +13,8 @@ type PendingDriveCalendar = {
 const pendingDriveCalendars =
   new Map<string, PendingDriveCalendar>();
 
-const TTL_MS = 1000 * 60 * 30;
+export const DRIVE_CALENDAR_PENDING_TTL_MS =
+  1000 * 60 * 60 * 24;
 
 export function setPendingDriveCalendar(
   sessionId: string,
@@ -34,8 +35,21 @@ export function getPendingDriveCalendar(
     return null;
   }
 
-  if (Date.now() - pending.updatedAt > TTL_MS) {
+  if (
+    Date.now() - pending.updatedAt >
+    DRIVE_CALENDAR_PENDING_TTL_MS
+  ) {
     pendingDriveCalendars.delete(sessionId);
+
+    console.log(
+      "[L-AI Memory] Expired pending cleared:",
+      {
+        sessionId,
+        memoryKey:
+          "pending_calendar_candidates",
+      },
+    );
+
     return null;
   }
 
