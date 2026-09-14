@@ -1838,6 +1838,307 @@ async function handleCalendarPending(
   return null;
 }
 
+async function preprocessDriveCalendarCrossContext(
+  sessionId: string,
+  rawMessage: string,
+  currentMessage: string,
+) {
+  const rememberedDriveFile =
+    await getMemory<{
+      fileId: string;
+      fileName: string;
+      webViewLink?: string;
+    }>(
+      sessionId,
+      "drive",
+      "recent_file",
+    );
+
+  const driveToCalendarPattern =
+    /(?:그\s*파일|아까\s*파일|방금\s*파일|그\s*문서).*(?:일정|캘린더|달력).*(?:추가|등록|넣어|만들어)|(?:그\s*파일|아까\s*파일|방금\s*파일|그\s*문서).*(?:일정\s*찾아)/u;
+
+  /*
+   * Drive → Calendar cross-context 요청이 아니면
+   * 기존 message를 그대로 반환한다.
+   */
+  if (
+    !rememberedDriveFile ||
+    !driveToCalendarPattern.test(rawMessage)
+  ) {
+    return {
+      message: currentMessage,
+      response: null,
+    };
+  }
+
+  console.log(
+    "[L-AI Memory] Priority selected: drive_context",
+    {
+      sessionId,
+      fileName:
+        rememberedDriveFile.fileName,
+    },
+  );
+
+  console.log(
+    "[L-AI Memory] Drive → Calendar cross-context:",
+    {
+      sessionId,
+      fileName:
+        rememberedDriveFile.fileName,
+      fileId:
+        rememberedDriveFile.fileId,
+    },
+  );
+
+  const text =
+    await readGoogleDriveFile(
+      rememberedDriveFile.fileId,
+    );
+
+  if (!text) {
+    return {
+      message: currentMessage,
+      response: chatReply(
+        `${rememberedDriveFile.fileName} 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+      ),
+    };
+  }
+
+  /*
+   * 실제 일정 등록은 여기서 하지 않는다.
+   * 기존 Drive → Calendar flow가 이해할 수 있는
+   * message로만 변환한다.
+   */
+  return {
+    message:
+      `${rememberedDriveFile.fileName} 파일 내용에서 일정 찾아서 캘린더에 추가해줘.\n\n` +
+      text,
+    response: null,
+  };
+}
+
+async function handleAiRouter(
+  sessionId: string,
+  currentMessage: string,
+) {
+  let message = currentMessage;
+
+  let routedMessage:
+    | Awaited<ReturnType<typeof routeUserMessage>>
+    | null = null;
+
+  try {
+    const driveContextForRouter =
+      getDriveContext(sessionId);
+
+    console.log(
+      "[L-AI Memory] Priority selected: ai_router",
+      {
+        sessionId,
+      },
+    );
+
+    routedMessage = await routeUserMessage(
+      message,
+      {
+        previousFileName:
+          driveContextForRouter?.fileName ??
+          null,
+      },
+    );
+
+    if (routedMessage) {
+      console.log("[AI Router]", {
+        original: message,
+        normalized:
+          routedMessage.normalizedMessage,
+        intent: routedMessage.intent,
+        confidence:
+          routedMessage.confidence,
+      });
+
+      const isCalendarIntent =
+        routedMessage.intent ===
+          "calendar_get" ||
+        routedMessage.intent ===
+          "calendar_create" ||
+        routedMessage.intent ===
+          "calendar_update" ||
+        routedMessage.intent ===
+          "calendar_delete";
+
+      if (
+        !isCalendarIntent &&
+        routedMessage.needsClarification &&
+        routedMessage.clarificationQuestion
+      ) {
+        return {
+          routedMessage,
+          message,
+          response: chatReply(
+            routedMessage.clarificationQuestion,
+          ),
+        };
+      }
+
+      const normalizedMessage =
+        routedMessage.normalizedMessage.trim();
+
+      if (
+        normalizedMessage &&
+        routedMessage.confidence >= 0.65
+      ) {
+        message = normalizedMessage;
+      }
+    }
+  } catch (error) {
+    console.error(
+      "[AI Router] Route failed:",
+      error,
+    );
+
+    routedMessage = null;
+  }
+
+  return {
+    routedMessage,
+    message,
+    response: null,
+  };
+}
+
+async function handleRoutedCalendarIntent(
+  sessionId: string,
+  rawMessage: string,
+  message: string,
+  routedMessage:
+    | Awaited<ReturnType<typeof routeUserMessage>>
+    | null,
+) {
+  if (
+    !routedMessage ||
+    (
+      routedMessage.intent !== "calendar_get" &&
+      routedMessage.intent !== "calendar_create" &&
+      routedMessage.intent !== "calendar_update" &&
+      routedMessage.intent !== "calendar_delete"
+    )
+  ) {
+    return null;
+  }
+
+  try {
+    const referencedMessage =
+      resolveCalendarReferenceMessage(
+        sessionId,
+        rawMessage,
+      );
+
+    const calendarMessage =
+      referencedMessage !== rawMessage
+        ? referencedMessage
+        : buildCalendarContextMessage(
+            sessionId,
+            rawMessage,
+          );
+
+    const calendarResult =
+      await parseCalendarRequest(
+        calendarMessage,
+        new Date(),
+      );
+
+    if (calendarResult.kind === "get") {
+      return handleCalendarGet(
+        sessionId,
+        calendarResult.range,
+        calendarResult.rangeLabel,
+      );
+    }
+
+    if (calendarResult.kind === "create") {
+      setPendingCalendarAction(
+        sessionId,
+        {
+          kind: "create",
+          event: calendarResult.event,
+        },
+      );
+
+      return chatReply(
+        formatCalendarConfirmation(
+          calendarResult.event,
+        ),
+      );
+    }
+
+    if (calendarResult.kind === "update") {
+      return handleCalendarUpdate(
+        sessionId,
+        calendarResult.request,
+        message,
+      );
+    }
+
+    if (calendarResult.kind === "delete") {
+      return handleCalendarDelete(
+        sessionId,
+        calendarResult.request,
+      );
+    }
+
+    if (calendarResult.kind === "clarify") {
+      if (
+        calendarResult.operation === "update" ||
+        calendarResult.operation === "delete"
+      ) {
+        setPendingCalendarAction(
+          sessionId,
+          {
+            kind: "clarify_request",
+            operation:
+              calendarResult.operation,
+            originalMessage: message,
+            question:
+              calendarResult.message,
+            missingField: null,
+            stage: "clarification",
+          },
+        );
+      }
+
+      return chatReply(
+        calendarResult.message,
+      );
+    }
+
+    return chatReply(
+      "일정 요청은 이해했는데 세부 내용을 정확히 해석하지 못했어. 조금만 다르게 말해줘.",
+    );
+  } catch (error) {
+    console.error(
+      "[AI Router] Calendar execution failed:",
+      error,
+    );
+
+    if (
+      error instanceof
+      OpenAIConfigurationError
+    ) {
+      return chatError(
+        "AI 서비스를 사용할 수 없습니다. 서버 설정을 확인해 주세요.",
+        503,
+      );
+    }
+
+    return chatError(
+      "Calendar 요청을 처리하지 못했어. 잠시 후 다시 시도해줘.",
+      502,
+    );
+  }
+}
+
 async function handleChatRequest(request: Request, sessionId: string) {
   let body: unknown;
 
@@ -1868,75 +2169,23 @@ let message = rawMessage;
 
 await hydrateCalendarContext(sessionId);
 await hydrateDriveContext(sessionId);
-const rememberedDriveFile = await getMemory<{
-  fileId: string;
-  fileName: string;
-  webViewLink?: string;
-}>(
-  sessionId,
-  "drive",
-  "recent_file",
-);
 
 /*
- * ============================================================
  * 2. CROSS-CONTEXT PREPROCESSING
- *
- * 서로 다른 기능의 컨텍스트를 연결해야 하는 요청을
- * AI Router보다 먼저 처리한다.
- *
- * 현재 지원:
- * Drive 파일 → Calendar 일정 추출
- *
- * 예:
- * "그 파일에서 일정 찾아서 캘린더에 넣어줘"
- *
- * IMPORTANT:
- * 여기서는 실제 Calendar 등록을 바로 실행하지 않고,
- * 기존 Drive → Calendar 흐름이 이해할 수 있는 message로
- * 변환하는 역할만 한다.
- * ============================================================
  */
 
-const driveToCalendarPattern =
-  /(?:그\s*파일|아까\s*파일|방금\s*파일|그\s*문서).*(?:일정|캘린더|달력).*(?:추가|등록|넣어|만들어)|(?:그\s*파일|아까\s*파일|방금\s*파일|그\s*문서).*(?:일정\s*찾아)/u;
-
-if (
-  rememberedDriveFile &&
-  driveToCalendarPattern.test(rawMessage)
-) {
-  console.log(
-    "[L-AI Memory] Priority selected: drive_context",
-    {
-      sessionId,
-      fileName: rememberedDriveFile.fileName,
-    },
+const crossContextResult =
+  await preprocessDriveCalendarCrossContext(
+    sessionId,
+    rawMessage,
+    message,
   );
 
-  console.log(
-    "[L-AI Memory] Drive → Calendar cross-context:",
-    {
-      sessionId,
-      fileName: rememberedDriveFile.fileName,
-      fileId: rememberedDriveFile.fileId,
-    },
-  );
-
-  const text = await readGoogleDriveFile(
-    rememberedDriveFile.fileId,
-  );
-
-  if (!text) {
-    return chatReply(
-      `${rememberedDriveFile.fileName} 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-    );
-  }
-
-  // 기존 Drive → Calendar 일정 추출 흐름으로 넘기기
-  message =
-    `${rememberedDriveFile.fileName} 파일 내용에서 일정 찾아서 캘린더에 추가해줘.\n\n` +
-    text;
+if (crossContextResult.response) {
+  return crossContextResult.response;
 }
+
+message = crossContextResult.message;
 
 if (N8N_TEST_MESSAGES.has(message)) {
   return handleN8nTest(message);
@@ -2150,74 +2399,20 @@ if (earlyDriveCalendarResponse) {
  * ============================================================
  */
 
-let routedMessage:
-  | Awaited<ReturnType<typeof routeUserMessage>>
-  | null = null;
-
-try {
-  const driveContextForRouter =
-    getDriveContext(sessionId);
-
-  console.log(
-    "[L-AI Memory] Priority selected: ai_router",
-    {
-      sessionId,
-    },
-  );
-
-  routedMessage = await routeUserMessage(
+const routerResult =
+  await handleAiRouter(
+    sessionId,
     message,
-    {
-      previousFileName:
-        driveContextForRouter?.fileName ??
-        null,
-    },
   );
 
-  if (routedMessage) {
-    console.log("[AI Router]", {
-      original: message,
-      normalized:
-        routedMessage.normalizedMessage,
-      intent: routedMessage.intent,
-      confidence:
-        routedMessage.confidence,
-    });
-
-    const isCalendarIntent =
-  routedMessage.intent === "calendar_get" ||
-  routedMessage.intent === "calendar_create" ||
-  routedMessage.intent === "calendar_update" ||
-  routedMessage.intent === "calendar_delete";
-
-if (
-  !isCalendarIntent &&
-  routedMessage.needsClarification &&
-  routedMessage.clarificationQuestion
-) {
-  return chatReply(
-    routedMessage.clarificationQuestion,
-  );
+if (routerResult.response) {
+  return routerResult.response;
 }
 
-    const normalizedMessage =
-      routedMessage.normalizedMessage.trim();
+const routedMessage =
+  routerResult.routedMessage;
 
-    if (
-      normalizedMessage &&
-      routedMessage.confidence >= 0.65
-    ) {
-      message = normalizedMessage;
-    }
-  }
-} catch (error) {
-  console.error(
-    "[AI Router] Route failed:",
-    error,
-  );
-
-  routedMessage = null;
-}
+message = routerResult.message;
 
 /*
  * ============================================================
@@ -2245,131 +2440,16 @@ if (
  * ============================================================
  */
 
-/*
- * AI Router - Calendar 직접 실행
- */
-if (
-  routedMessage &&
-  (
-    routedMessage.intent === "calendar_get" ||
-    routedMessage.intent === "calendar_create" ||
-    routedMessage.intent === "calendar_update" ||
-    routedMessage.intent === "calendar_delete"
-  )
-) {
-  try {
-    const referencedMessage =
-  resolveCalendarReferenceMessage(
+const routedCalendarResponse =
+  await handleRoutedCalendarIntent(
     sessionId,
     rawMessage,
+    message,
+    routedMessage,
   );
 
-const calendarMessage =
-  referencedMessage !== rawMessage
-    ? referencedMessage
-    : buildCalendarContextMessage(
-        sessionId,
-        rawMessage,
-      );
-
-const calendarResult =
-  await parseCalendarRequest(
-    calendarMessage,
-    new Date(),
-  );
-
-    if (calendarResult.kind === "get") {
-      return handleCalendarGet(
-  sessionId,
-  calendarResult.range,
-  calendarResult.rangeLabel,
-);
-    }
-
-    if (calendarResult.kind === "create") {
-      setPendingCalendarAction(
-        sessionId,
-        {
-          kind: "create",
-          event: calendarResult.event,
-        },
-      );
-
-      return chatReply(
-        formatCalendarConfirmation(
-          calendarResult.event,
-        ),
-      );
-    }
-
-    if (calendarResult.kind === "update") {
-      return handleCalendarUpdate(
-        sessionId,
-        calendarResult.request,
-        message,
-      );
-    }
-
-    if (calendarResult.kind === "delete") {
-      return handleCalendarDelete(
-        sessionId,
-        calendarResult.request,
-      );
-    }
-
-    if (calendarResult.kind === "clarify") {
-      if (
-        calendarResult.operation === "update" ||
-        calendarResult.operation === "delete"
-      ) {
-        setPendingCalendarAction(
-          sessionId,
-          {
-            kind: "clarify_request",
-            operation:
-              calendarResult.operation,
-            originalMessage: message,
-            question:
-              calendarResult.message,
-            missingField: null,
-            stage: "clarification",
-          },
-        );
-      }
-
-      return chatReply(
-        calendarResult.message,
-      );
-    }
-
-    /*
-     * Router는 Calendar라고 판단했는데
-     * Calendar parser가 못 알아들은 경우
-     */
-    return chatReply(
-      "일정 요청은 이해했는데 세부 내용을 정확히 해석하지 못했어. 조금만 다르게 말해줘.",
-    );
-  } catch (error) {
-    console.error(
-      "[AI Router] Calendar execution failed:",
-      error,
-    );
-
-    if (
-      error instanceof
-      OpenAIConfigurationError
-    ) {
-      return chatError(
-        "AI 서비스를 사용할 수 없습니다. 서버 설정을 확인해 주세요.",
-        503,
-      );
-    }
-
-    return chatError(
-      "Calendar 요청을 처리하지 못했어. 잠시 후 다시 시도해줘.",
-      502,
-    );
-  }
+if (routedCalendarResponse) {
+  return routedCalendarResponse;
 }
   /*
  * AI Router - Drive 직접 실행
