@@ -26,6 +26,25 @@ const TIME_FORMATTER = new Intl.DateTimeFormat("ko-KR", {
   hour12: true,
 });
 
+const MONTH_DAY_WEEKDAY_FORMATTER = new Intl.DateTimeFormat(
+  "ko-KR",
+  {
+    timeZone: SEOUL_TIME_ZONE,
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+  },
+);
+
+const DAY_WEEKDAY_FORMATTER = new Intl.DateTimeFormat(
+  "ko-KR",
+  {
+    timeZone: SEOUL_TIME_ZONE,
+    day: "numeric",
+    weekday: "short",
+  },
+);
+
 function isSameSeoulDate(start: Date, end: Date) {
   return (
     DATE_WITH_YEAR_FORMATTER.format(start) ===
@@ -45,7 +64,10 @@ function formatRange(event: CalendarEvent, includeYear: boolean) {
   return `${startText} ~ ${endText}`;
 }
 
-function formatTimedEvent(event: GoogleCalendarEvent) {
+function formatTimedEvent(
+  event: GoogleCalendarEvent,
+  rangeLabel: string,
+) {
   const startValue = event.start.dateTime;
   const endValue = event.end.dateTime;
 
@@ -56,15 +78,84 @@ function formatTimedEvent(event: GoogleCalendarEvent) {
   const start = new Date(startValue);
   const end = new Date(endValue);
 
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+  if (
+    Number.isNaN(start.getTime()) ||
+    Number.isNaN(end.getTime())
+  ) {
     return null;
   }
 
-  const timeRange = isSameSeoulDate(start, end)
-    ? TIME_FORMATTER.formatRange(start, end)
-    : `${DATE_FORMATTER.format(start)} ${TIME_FORMATTER.format(start)} ~ ${DATE_FORMATTER.format(end)} ${TIME_FORMATTER.format(end)}`;
+  const isYearRange =
+    /(?:이번\s*년|올해|금년)/u.test(
+      rangeLabel,
+    );
 
-  return `${timeRange} — ${event.summary?.trim() || "제목 없는 일정"}`;
+  const isMonthRange =
+    /(?:이번\s*달|이번\s*월)/u.test(
+      rangeLabel,
+    );
+
+  const isWeekRange =
+    /(?:이번\s*주|다음\s*주|지난\s*주)/u.test(
+      rangeLabel,
+    );
+
+  const sameDay =
+    isSameSeoulDate(start, end);
+
+  let startPrefix = "";
+
+  if (isYearRange) {
+    startPrefix =
+      MONTH_DAY_WEEKDAY_FORMATTER.format(
+        start,
+      );
+  } else if (isMonthRange) {
+    startPrefix =
+      DAY_WEEKDAY_FORMATTER.format(
+        start,
+      );
+  } else if (isWeekRange) {
+    startPrefix =
+      MONTH_DAY_WEEKDAY_FORMATTER.format(
+        start,
+      );
+  }
+
+  if (sameDay) {
+    const timeRange =
+      TIME_FORMATTER.formatRange(
+        start,
+        end,
+      );
+
+    return startPrefix
+      ? `${startPrefix} ${timeRange} — ${
+          event.summary?.trim() ||
+          "제목 없는 일정"
+        }`
+      : `${timeRange} — ${
+          event.summary?.trim() ||
+          "제목 없는 일정"
+        }`;
+  }
+
+  const startText = `${
+    MONTH_DAY_WEEKDAY_FORMATTER.format(
+      start,
+    )
+  } ${TIME_FORMATTER.format(start)}`;
+
+  const endText = `${
+    MONTH_DAY_WEEKDAY_FORMATTER.format(
+      end,
+    )
+  } ${TIME_FORMATTER.format(end)}`;
+
+  return `${startText} ~ ${endText} — ${
+    event.summary?.trim() ||
+    "제목 없는 일정"
+  }`;
 }
 
 function formatAllDayEvent(event: GoogleCalendarEvent) {
@@ -143,7 +234,7 @@ export function formatCalendarEvents(
   const eventLines = events
     .map((event) =>
       event.start.dateTime
-        ? formatTimedEvent(event)
+        ? formatTimedEvent(event, rangeLabel)
         : formatAllDayEvent(event),
     )
     .filter((line): line is string => line !== null);

@@ -1515,6 +1515,328 @@ async function handleDriveContextFollowUp(
   );
 }
 
+async function handleCalendarDirectMemoryReference(
+  sessionId: string,
+  rawMessage: string,
+) {
+  const rememberedCalendarContext =
+    getCalendarContext(sessionId);
+
+  const rememberedCalendarReferencePattern =
+    /(?:그거|그걸|그\s*거|그\s*일정|저거|저걸|아까꺼|아까\s*거|아까\s*그거|아까\s*일정|아까\s*(?:만든|생성한|추가한|수정한)\s*일정|방금꺼|방금\s*거|방금\s*그거|방금\s*일정|방금\s*만든\s*거|방금\s*(?:만든|생성한|추가한|수정한)\s*일정|방금\s*수정한\s*거|전에\s*말한\s*거|아까\s*말한\s*거)/u;
+
+  const calendarUpdateWordPattern =
+    /(?:바꿔|변경|수정|옮겨|미뤄|당겨)/u;
+
+  const calendarDeleteWordPattern =
+    /(?:지워|삭제|없애)/u;
+
+  if (
+    rememberedCalendarContext?.events.length !== 1 ||
+    !rememberedCalendarReferencePattern.test(rawMessage)
+  ) {
+    return null;
+  }
+
+  console.log(
+    "[L-AI Memory] Priority selected: calendar_context",
+    {
+      sessionId,
+    },
+  );
+
+  const targetEvent =
+    rememberedCalendarContext.events[0];
+
+  if (
+    calendarUpdateWordPattern.test(
+      rawMessage,
+    )
+  ) {
+    console.log(
+      "[Calendar Direct Reference: Update]",
+      {
+        rawMessage,
+        targetEvent,
+      },
+    );
+
+    const directUpdateRequest:
+      CalendarUpdateRequest = {
+      range: {
+        start: targetEvent.start,
+        end: targetEvent.end,
+      },
+
+      target: {
+        title: targetEvent.title,
+        start: targetEvent.start,
+      },
+
+      patch: {
+        title: null,
+        start: null,
+        end: null,
+      },
+
+      unresolvedTime: null,
+      missingField: null,
+      clarification: null,
+    };
+
+    return handleCalendarUpdate(
+      sessionId,
+      directUpdateRequest,
+      rawMessage,
+    );
+  }
+
+  if (
+    calendarDeleteWordPattern.test(
+      rawMessage,
+    )
+  ) {
+    console.log(
+      "[Calendar Direct Reference: Delete]",
+      {
+        rawMessage,
+        targetEvent,
+      },
+    );
+
+    const directDeleteRequest:
+      CalendarDeleteRequest = {
+      range: {
+        start: targetEvent.start,
+        end: targetEvent.end,
+      },
+
+      target: {
+        title: targetEvent.title,
+        start: targetEvent.start,
+      },
+    };
+
+    return handleCalendarDelete(
+      sessionId,
+      directDeleteRequest,
+    );
+  }
+
+  return null;
+}
+
+async function handleCalendarPending(
+  sessionId: string,
+  rawMessage: string,
+  rawShortReply: string,
+) {
+  let rawPending =
+    getPendingCalendarAction(sessionId);
+
+  /*
+   * 명시적인 Calendar pending 취소
+   */
+  if (
+    CANCEL_MESSAGES.has(
+      rawShortReply,
+    )
+  ) {
+    if (!rawPending) {
+      return chatReply(
+        "취소할 일정 작업이 없습니다.",
+      );
+    }
+
+    console.log(
+      "[L-AI Memory] Priority selected: calendar_pending",
+      {
+        sessionId,
+        pendingKind:
+          rawPending.kind,
+      },
+    );
+
+    clearPendingCalendarAction(
+      sessionId,
+    );
+
+    return chatReply(
+      "Calendar 작업을 취소했어.",
+    );
+  }
+
+  /*
+   * clarification 진행 중
+   * 완전히 새로운 명령이 들어오면
+   * 오래된 clarification을 제거한다.
+   */
+  if (
+    (
+      rawPending?.kind ===
+        "clarify_update" ||
+      rawPending?.kind ===
+        "clarify_request"
+    ) &&
+    isIndependentCommandWhileClarifying(
+      rawMessage,
+    )
+  ) {
+    console.log(
+      "[Calendar Pending] Cleared stale clarification for a new command:",
+      {
+        sessionId,
+        pendingKind:
+          rawPending.kind,
+        rawMessage,
+      },
+    );
+
+    clearPendingCalendarAction(
+      sessionId,
+    );
+
+    rawPending = null;
+  }
+
+  /*
+   * 기존 update clarification
+   */
+  if (
+    rawPending?.kind ===
+    "clarify_update"
+  ) {
+    return handleUpdateClarification(
+      sessionId,
+      rawPending,
+      rawShortReply,
+    );
+  }
+
+  /*
+   * AI 기반 stored clarification
+   */
+  if (
+    rawPending?.kind ===
+    "clarify_request"
+  ) {
+    try {
+      return await handleStoredRequestClarification(
+        sessionId,
+        rawPending,
+        rawMessage,
+      );
+    } catch (error) {
+      if (
+        error instanceof
+        OpenAIConfigurationError
+      ) {
+        return chatError(
+          "AI 서비스를 사용할 수 없습니다. 서버 설정을 확인해 주세요.",
+          503,
+        );
+      }
+
+      return chatError(
+        "AI 응답을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        502,
+      );
+    }
+  }
+
+  /*
+   * 여러 일정 중 수정 / 삭제 대상 선택
+   */
+  if (
+    rawPending?.kind ===
+      "select_update" ||
+    rawPending?.kind ===
+      "select_delete"
+  ) {
+    const selectionResponse =
+      handlePendingSelection(
+        sessionId,
+        rawPending,
+        rawShortReply,
+      );
+
+    if (selectionResponse) {
+      return selectionResponse;
+    }
+
+    /*
+     * last_action 명령은
+     * pending을 뚫고 다음 단계로 갈 수 있다.
+     */
+    if (
+      !isLastActionDirectCommand(
+        rawMessage,
+      )
+    ) {
+      return chatReply(
+        expectedApprovalMessage(
+          rawPending,
+        ),
+      );
+    }
+  }
+
+  /*
+   * Calendar create / update / delete
+   * 실제 실행 승인
+   */
+  if (
+    rawPending &&
+    isConfirmation(rawPending)
+  ) {
+    if (
+      isApprovalForPending(
+        rawShortReply,
+        rawPending,
+      )
+    ) {
+      return executePendingAction(
+        sessionId,
+      );
+    }
+
+    if (
+      !isLastActionDirectCommand(
+        rawMessage,
+      )
+    ) {
+      return chatReply(
+        expectedApprovalMessage(
+          rawPending,
+        ),
+      );
+    }
+  }
+
+  /*
+   * pending도 없는데
+   * "ㅇㅇ", "수정", "삭제" 같은
+   * 승인 메시지만 들어온 경우
+   */
+  if (
+    GENERIC_APPROVAL_MESSAGES.has(
+      rawShortReply,
+    ) ||
+    isActionApproval(
+      rawShortReply,
+    )
+  ) {
+    return chatReply(
+      "확인할 일정 작업이 없습니다.",
+    );
+  }
+
+  /*
+   * Calendar pending 관련 요청이 아니면
+   * 다음 단계로 넘긴다.
+   */
+  return null;
+}
 
 async function handleChatRequest(request: Request, sessionId: string) {
   let body: unknown;
@@ -1648,143 +1970,15 @@ const rawShortReply =
  * ============================================================
  */
 
-let rawPending =
-  getPendingCalendarAction(sessionId);
-
-/*
- * Calendar pending 작업은 AI Router보다 먼저 처리한다.
- * "응", "추가", "취소", 번호 선택 같은 짧은 답변을
- * AI가 일반대화로 바꾸지 못하게 한다.
- */
-
-if (CANCEL_MESSAGES.has(rawShortReply)) {
-  if (!rawPending) {
-    return chatReply(
-      "취소할 일정 작업이 없습니다.",
-    );
-  }
-
-  console.log(
-    "[L-AI Memory] Priority selected: calendar_pending",
-    {
-      sessionId,
-      pendingKind: rawPending.kind,
-    },
-  );
-
-  clearPendingCalendarAction(sessionId);
-
-  return chatReply(
-    "Calendar 작업을 취소했어.",
-  );
-}
-
-if (
-  (
-    rawPending?.kind === "clarify_update" ||
-    rawPending?.kind === "clarify_request"
-  ) &&
-  isIndependentCommandWhileClarifying(
-    rawMessage,
-  )
-) {
-  console.log(
-    "[Calendar Pending] Cleared stale clarification for a new command:",
-    {
-      sessionId,
-      pendingKind: rawPending.kind,
-      rawMessage,
-    },
-  );
-
-  clearPendingCalendarAction(sessionId);
-  rawPending = null;
-}
-
-if (rawPending?.kind === "clarify_update") {
-  return handleUpdateClarification(
+const calendarPendingResponse =
+  await handleCalendarPending(
     sessionId,
-    rawPending,
+    rawMessage,
     rawShortReply,
   );
-}
 
-if (rawPending?.kind === "clarify_request") {
-  try {
-    return await handleStoredRequestClarification(
-      sessionId,
-      rawPending,
-      rawMessage,
-    );
-  } catch (error) {
-    if (error instanceof OpenAIConfigurationError) {
-      return chatError(
-        "AI 서비스를 사용할 수 없습니다. 서버 설정을 확인해 주세요.",
-        503,
-      );
-    }
-
-    return chatError(
-      "AI 응답을 생성하지 못했습니다. 잠시 후 다시 시도해 주세요.",
-      502,
-    );
-  }
-}
-
-if (
-  rawPending?.kind === "select_update" ||
-  rawPending?.kind === "select_delete"
-) {
-  const selectionResponse =
-    handlePendingSelection(
-      sessionId,
-      rawPending,
-      rawShortReply,
-    );
-
-  if (selectionResponse) {
-    return selectionResponse;
-  }
-
-  if (
-    !isLastActionDirectCommand(
-      rawMessage,
-    )
-  ) {
-    return chatReply(
-      expectedApprovalMessage(rawPending),
-    );
-  }
-}
-
-if (rawPending && isConfirmation(rawPending)) {
-  if (
-    isApprovalForPending(
-      rawShortReply,
-      rawPending,
-    )
-  ) {
-    return executePendingAction(sessionId);
-  }
-
-  if (
-    !isLastActionDirectCommand(
-      rawMessage,
-    )
-  ) {
-    return chatReply(
-      expectedApprovalMessage(rawPending),
-    );
-  }
-}
-
-if (
-  GENERIC_APPROVAL_MESSAGES.has(rawShortReply) ||
-  isActionApproval(rawShortReply)
-) {
-  return chatReply(
-    "확인할 일정 작업이 없습니다.",
-  );
+if (calendarPendingResponse) {
+  return calendarPendingResponse;
 }
 
 /*
@@ -1852,87 +2046,14 @@ if (lastActionResponse) {
 const rememberedCalendarContext =
   getCalendarContext(sessionId);
 
-const rememberedCalendarReferencePattern =
-  /(?:그거|그걸|그\s*거|그\s*일정|저거|저걸|아까꺼|아까\s*거|아까\s*그거|아까\s*일정|아까\s*(?:만든|생성한|추가한|수정한)\s*일정|방금꺼|방금\s*거|방금\s*그거|방금\s*일정|방금\s*만든\s*거|방금\s*(?:만든|생성한|추가한|수정한)\s*일정|방금\s*수정한\s*거|전에\s*말한\s*거|아까\s*말한\s*거)/u;
-
-const calendarUpdateWordPattern =
-  /(?:바꿔|변경|수정|옮겨|미뤄|당겨)/u;
-
-const calendarDeleteWordPattern =
-  /(?:지워|삭제|없애)/u;
-
-if (
-  rememberedCalendarContext?.events.length === 1 &&
-  rememberedCalendarReferencePattern.test(rawMessage)
-) {
-  console.log(
-    "[L-AI Memory] Priority selected: calendar_context",
-    {
-      sessionId,
-    },
+const calendarDirectMemoryResponse =
+  await handleCalendarDirectMemoryReference(
+    sessionId,
+    rawMessage,
   );
 
-  const targetEvent =
-    rememberedCalendarContext.events[0];
-
-  if (calendarUpdateWordPattern.test(rawMessage)) {
-    console.log("[Calendar Direct Reference: Update]", {
-      rawMessage,
-      targetEvent,
-    });
-
-    const directUpdateRequest: CalendarUpdateRequest = {
-      range: {
-        start: targetEvent.start,
-        end: targetEvent.end,
-      },
-
-      target: {
-        title: targetEvent.title,
-        start: targetEvent.start,
-      },
-
-      patch: {
-        title: null,
-        start: null,
-        end: null,
-      },
-
-      unresolvedTime: null,
-      missingField: null,
-      clarification: null,
-    };
-
-    return handleCalendarUpdate(
-      sessionId,
-      directUpdateRequest,
-      rawMessage,
-    );
-  }
-
-  if (calendarDeleteWordPattern.test(rawMessage)) {
-    console.log("[Calendar Direct Reference: Delete]", {
-      rawMessage,
-      targetEvent,
-    });
-
-    const directDeleteRequest: CalendarDeleteRequest = {
-      range: {
-        start: targetEvent.start,
-        end: targetEvent.end,
-      },
-
-      target: {
-        title: targetEvent.title,
-        start: targetEvent.start,
-      },
-    };
-
-    return handleCalendarDelete(
-      sessionId,
-      directDeleteRequest,
-    );
-  }
+if (calendarDirectMemoryResponse) {
+  return calendarDirectMemoryResponse;
 }
 
 /*
