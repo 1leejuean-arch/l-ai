@@ -1170,6 +1170,352 @@ async function handleStoredRequestClarification(
   return chatReply(pending.question);
 }
 
+async function handleLastActionMemory(
+  sessionId: string,
+  rawMessage: string,
+) {
+  const lastActionQuestionPattern =
+    /(?:방금|아까|최근에).*(?:뭐|무엇).*(?:했|한)|(?:방금|아까|최근에).*(?:작업|한\s*거).*(?:알려|뭐였)/u;
+
+  const lastActionRecency =
+    getLastActionRecency(
+      rawMessage,
+    );
+
+  /*
+   * 최근 작업 조회
+   *
+   * 예:
+   * "방금 한 거 뭐였지?"
+   */
+  if (
+    lastActionQuestionPattern.test(
+      rawMessage,
+    )
+  ) {
+    const lastAction =
+      await getLastAction(
+        sessionId,
+        lastActionRecency,
+      );
+
+    if (!lastAction) {
+      return chatReply(
+        "최근에 기억하고 있는 작업이 없어.",
+      );
+    }
+
+    console.log(
+      "[L-AI Memory] Priority selected: last_action",
+      {
+        sessionId,
+        type: lastAction.type,
+      },
+    );
+
+    return chatReply(
+      `방금 기억하고 있는 작업은 **${lastAction.label}**이야.`,
+    );
+  }
+
+  /*
+   * 최근 Calendar 수정 되돌리기
+   *
+   * 예:
+   * "방금 수정한 거 되돌려줘"
+   */
+  const lastActionRollbackPattern =
+    /(?:방금|아까|최근(?:에)?).*(?:수정|바꾼|변경).*(?:되돌려|원래대로|취소)/u;
+
+  if (
+    lastActionRollbackPattern.test(
+      rawMessage,
+    )
+  ) {
+    const lastAction =
+      await getLastAction(
+        sessionId,
+        lastActionRecency,
+      );
+
+    if (!lastAction) {
+      return chatReply(
+        "최근에 되돌릴 수정 작업을 기억하고 있지 않아.",
+      );
+    }
+
+    console.log(
+      "[L-AI Memory] Priority selected: last_action",
+      {
+        sessionId,
+        type: lastAction.type,
+      },
+    );
+
+    if (
+      lastAction.type !==
+      "calendar_update"
+    ) {
+      return chatReply(
+        `최근 작업은 **${lastAction.label}**이지만, 일정 수정 작업이 아니라서 되돌릴 수 없어.`,
+      );
+    }
+
+    const eventId =
+      typeof lastAction.data?.eventId ===
+      "string" &&
+      lastAction.data.eventId.trim()
+        ? lastAction.data.eventId
+        : null;
+
+    const before =
+      getStoredCalendarEvent(
+        lastAction.data?.before,
+      );
+
+    const after =
+      getStoredCalendarEvent(
+        lastAction.data?.after,
+      ) ??
+      getStoredCalendarEvent({
+        title: lastAction.data?.title,
+        start: lastAction.data?.start,
+        end: lastAction.data?.end,
+      });
+
+    if (
+      !eventId ||
+      !before ||
+      !after
+    ) {
+      return chatReply(
+        "최근 일정 수정 정보가 부족해서 되돌릴 수 없어.",
+      );
+    }
+
+    setPendingCalendarAction(
+      sessionId,
+      {
+        kind: "update",
+        eventId,
+        before: after,
+        after: before,
+      },
+    );
+
+    const confirmation =
+      formatCalendarUpdateConfirmation(
+        after,
+        before,
+      );
+
+    return chatReply(
+      confirmation.replace(
+        "다음 일정을 수정할까요?",
+        "이 일정 변경을 되돌릴까요?",
+      ),
+    );
+  }
+
+  /*
+   * 최근 작업 취소
+   *
+   * 현재 자동 취소 지원:
+   * Calendar create
+   */
+  const lastActionCancelPattern =
+    /(?:방금|아까|최근에).*(?:한\s*거|작업|일정).*(?:취소|되돌려|삭제|지워)/u;
+
+  if (
+    lastActionCancelPattern.test(
+      rawMessage,
+    ) &&
+    getExplicitMemoryTarget(
+      rawMessage,
+    ) === null
+  ) {
+    const lastAction =
+      await getLastAction(
+        sessionId,
+        lastActionRecency,
+      );
+
+    if (!lastAction) {
+      return chatReply(
+        "최근에 취소할 작업을 기억하고 있지 않아.",
+      );
+    }
+
+    console.log(
+      "[L-AI Memory] Priority selected: last_action",
+      {
+        sessionId,
+        type: lastAction.type,
+      },
+    );
+
+    if (
+      lastAction.type !==
+      "calendar_create"
+    ) {
+      return chatReply(
+        `최근 작업은 **${lastAction.label}**이지만, 아직 이 작업은 자동으로 취소할 수 없어.`,
+      );
+    }
+
+    const title =
+      typeof lastAction.data?.title ===
+      "string"
+        ? lastAction.data.title
+        : null;
+
+    const start =
+      typeof lastAction.data?.start ===
+      "string"
+        ? lastAction.data.start
+        : null;
+
+    const end =
+      typeof lastAction.data?.end ===
+      "string"
+        ? lastAction.data.end
+        : start;
+
+    if (
+      !title ||
+      !start ||
+      !end
+    ) {
+      return chatReply(
+        "방금 생성한 일정 정보가 부족해서 자동으로 취소할 수 없어.",
+      );
+    }
+
+    const range =
+      getCalendarCheckRange({
+        title,
+        start,
+        end,
+      });
+
+    const deleteRequest:
+      CalendarDeleteRequest = {
+        range,
+        target: {
+          title,
+          start,
+        },
+      };
+
+    console.log(
+      "[L-AI Memory] Cancel last calendar action:",
+      {
+        sessionId,
+        title,
+        start,
+      },
+    );
+
+    return handleCalendarDelete(
+      sessionId,
+      deleteRequest,
+    );
+  }
+
+  /*
+   * last_action 관련 요청이 아니면
+   * 다음 처리 단계로 넘긴다.
+   */
+  return null;
+}
+
+async function handleDriveContextFollowUp(
+  sessionId: string,
+  rawMessage: string,
+  message: string,
+  hasRememberedCalendarContext: boolean,
+) {
+  const savedDriveContext =
+    getDriveContext(sessionId);
+
+  if (
+    !savedDriveContext ||
+    !isDriveContextFollowUp(message) ||
+    (
+      getExplicitMemoryTarget(rawMessage) !==
+        "drive_context" &&
+      hasRememberedCalendarContext
+    )
+  ) {
+    return null;
+  }
+
+  console.log(
+    "[L-AI Memory] Priority selected: drive_context",
+    {
+      sessionId,
+      fileName:
+        savedDriveContext.fileName,
+    },
+  );
+
+  const text =
+    await readGoogleDriveFile(
+      savedDriveContext.fileId,
+    );
+
+  if (!text) {
+    return chatReply(
+      `'${savedDriveContext.fileName}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
+    );
+  }
+
+  const answer =
+    await answerDriveFileQuestion(
+      savedDriveContext.fileName,
+      text,
+      message,
+    );
+
+  const fileUrl =
+    savedDriveContext.webViewLink ||
+    `https://drive.google.com/open?id=${encodeURIComponent(
+      savedDriveContext.fileId,
+    )}`;
+
+  const isSummaryRequest =
+    /요약/u.test(rawMessage);
+
+  await saveLastAction(
+    sessionId,
+    {
+      type: isSummaryRequest
+        ? "drive_summary"
+        : "drive_read",
+
+      label: isSummaryRequest
+        ? `${savedDriveContext.fileName} 파일 요약`
+        : `${savedDriveContext.fileName} 내용 확인`,
+
+      data: {
+        fileId:
+          savedDriveContext.fileId,
+
+        fileName:
+          savedDriveContext.fileName,
+
+        webViewLink:
+          savedDriveContext.webViewLink,
+      },
+    },
+  );
+
+  return chatReply(
+    `**${savedDriveContext.fileName}에서 이어서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
+  );
+}
+
+
 async function handleChatRequest(request: Request, sessionId: string) {
   let body: unknown;
 
@@ -1185,6 +1531,19 @@ async function handleChatRequest(request: Request, sessionId: string) {
 
   const rawMessage = body.message.trim();
 let message = rawMessage;
+
+/*
+ * ============================================================
+ * 1. REQUEST CONTEXT HYDRATION
+ *
+ * 요청을 처리하기 전에 Supabase에 저장된
+ * Calendar / Drive 대화 컨텍스트를 복원한다.
+ *
+ * IMPORTANT:
+ * 이 단계는 AI Router보다 먼저 실행되어야 한다.
+ * ============================================================
+ */
+
 await hydrateCalendarContext(sessionId);
 await hydrateDriveContext(sessionId);
 const rememberedDriveFile = await getMemory<{
@@ -1196,6 +1555,26 @@ const rememberedDriveFile = await getMemory<{
   "drive",
   "recent_file",
 );
+
+/*
+ * ============================================================
+ * 2. CROSS-CONTEXT PREPROCESSING
+ *
+ * 서로 다른 기능의 컨텍스트를 연결해야 하는 요청을
+ * AI Router보다 먼저 처리한다.
+ *
+ * 현재 지원:
+ * Drive 파일 → Calendar 일정 추출
+ *
+ * 예:
+ * "그 파일에서 일정 찾아서 캘린더에 넣어줘"
+ *
+ * IMPORTANT:
+ * 여기서는 실제 Calendar 등록을 바로 실행하지 않고,
+ * 기존 Drive → Calendar 흐름이 이해할 수 있는 message로
+ * 변환하는 역할만 한다.
+ * ============================================================
+ */
 
 const driveToCalendarPattern =
   /(?:그\s*파일|아까\s*파일|방금\s*파일|그\s*문서).*(?:일정|캘린더|달력).*(?:추가|등록|넣어|만들어)|(?:그\s*파일|아까\s*파일|방금\s*파일|그\s*문서).*(?:일정\s*찾아)/u;
@@ -1243,6 +1622,31 @@ if (N8N_TEST_MESSAGES.has(message)) {
 
 const rawShortReply =
   normalizeShortReply(rawMessage);
+
+/*
+ * ============================================================
+ * 3. CALENDAR PENDING HANDLER
+ *
+ * 사용자가 이전 Calendar 작업에 대해
+ * 짧게 답한 내용을 AI Router보다 먼저 처리한다.
+ *
+ * 예:
+ * "응"
+ * "추가"
+ * "취소"
+ * "1번"
+ *
+ * 처리 대상:
+ * - Calendar create 승인
+ * - update/delete 대상 선택
+ * - clarification 응답
+ * - pending 취소
+ *
+ * IMPORTANT:
+ * 이 단계는 AI Router보다 먼저 실행되어야 한다.
+ * 짧은 승인/선택 답변을 일반 대화로 오해하지 않게 한다.
+ * ============================================================
+ */
 
 let rawPending =
   getPendingCalendarAction(sessionId);
@@ -1383,237 +1787,60 @@ if (
   );
 }
 
-const lastActionQuestionPattern =
-  /(?:방금|아까|최근에).*(?:뭐|무엇).*(?:했|한)|(?:방금|아까|최근에).*(?:작업|한\s*거).*(?:알려|뭐였)/u;
+/*
+ * ============================================================
+ * 4. LAST ACTION MEMORY
+ *
+ * 사용자가 방금/아까/최근에 했던 작업을
+ * 다시 묻거나 되돌리거나 취소하려는 요청을 처리한다.
+ *
+ * 예:
+ * "방금 한 거 뭐였지?"
+ * "아까 수정한 거 되돌려줘"
+ * "방금 한 거 취소해줘"
+ *
+ * 현재 지원:
+ * - 최근 작업 조회
+ * - Calendar update 되돌리기
+ * - Calendar create 취소
+ *
+ * IMPORTANT:
+ * 이 단계는 AI Router보다 먼저 실행되어야 한다.
+ * 이미 저장된 last_action을 우선 참조하기 때문이다.
+ * ============================================================
+ */
 
-const lastActionRecency =
-  getLastActionRecency(
-    rawMessage,
-  );
-
-if (
-  lastActionQuestionPattern.test(
-    rawMessage,
-  )
-) {
-  const lastAction =
-    await getLastAction(
-      sessionId,
-      lastActionRecency,
-    );
-
-  if (!lastAction) {
-    return chatReply(
-      "최근에 기억하고 있는 작업이 없어.",
-    );
-  }
-
-  console.log(
-    "[L-AI Memory] Priority selected: last_action",
-    {
-      sessionId,
-      type: lastAction.type,
-    },
-  );
-
-  return chatReply(
-    `방금 기억하고 있는 작업은 **${lastAction.label}**이야.`,
-  );
-}
-const lastActionRollbackPattern =
-  /(?:방금|아까|최근(?:에)?).*(?:수정|바꾼|변경).*(?:되돌려|원래대로|취소)/u;
-
-if (
-  lastActionRollbackPattern.test(
-    rawMessage,
-  )
-) {
-  const lastAction =
-    await getLastAction(
-      sessionId,
-      lastActionRecency,
-    );
-
-  if (!lastAction) {
-    return chatReply(
-      "최근에 되돌릴 수정 작업을 기억하고 있지 않아.",
-    );
-  }
-
-  console.log(
-    "[L-AI Memory] Priority selected: last_action",
-    {
-      sessionId,
-      type: lastAction.type,
-    },
-  );
-
-  if (
-    lastAction.type !==
-    "calendar_update"
-  ) {
-    return chatReply(
-      `최근 작업은 **${lastAction.label}**이지만, 일정 수정 작업이 아니라서 되돌릴 수 없어.`,
-    );
-  }
-
-  const eventId =
-    typeof lastAction.data?.eventId ===
-    "string" &&
-    lastAction.data.eventId.trim()
-      ? lastAction.data.eventId
-      : null;
-
-  const before =
-    getStoredCalendarEvent(
-      lastAction.data?.before,
-    );
-
-  const after =
-    getStoredCalendarEvent(
-      lastAction.data?.after,
-    ) ??
-    getStoredCalendarEvent({
-      title: lastAction.data?.title,
-      start: lastAction.data?.start,
-      end: lastAction.data?.end,
-    });
-
-  if (
-    !eventId ||
-    !before ||
-    !after
-  ) {
-    return chatReply(
-      "최근 일정 수정 정보가 부족해서 되돌릴 수 없어.",
-    );
-  }
-
-  setPendingCalendarAction(
+const lastActionResponse =
+  await handleLastActionMemory(
     sessionId,
-    {
-      kind: "update",
-      eventId,
-      before: after,
-      after: before,
-    },
-  );
-
-  const confirmation =
-    formatCalendarUpdateConfirmation(
-      after,
-      before,
-    );
-
-  return chatReply(
-    confirmation.replace(
-      "다음 일정을 수정할까요?",
-      "이 일정 변경을 되돌릴까요?",
-    ),
-  );
-}
-const lastActionCancelPattern =
-  /(?:방금|아까|최근에).*(?:한\s*거|작업|일정).*(?:취소|되돌려|삭제|지워)/u;
-
-if (
-  lastActionCancelPattern.test(
     rawMessage,
-  ) &&
-  getExplicitMemoryTarget(
-    rawMessage,
-  ) === null
-) {
-  const lastAction =
-    await getLastAction(
-      sessionId,
-      lastActionRecency,
-    );
-
-  if (!lastAction) {
-    return chatReply(
-      "최근에 취소할 작업을 기억하고 있지 않아.",
-    );
-  }
-
-  console.log(
-    "[L-AI Memory] Priority selected: last_action",
-    {
-      sessionId,
-      type: lastAction.type,
-    },
   );
 
-  /*
-   * 현재는 방금 생성한 Calendar 일정의
-   * 취소부터 지원한다.
-   */
-  if (
-    lastAction.type !==
-    "calendar_create"
-  ) {
-    return chatReply(
-      `최근 작업은 **${lastAction.label}**이지만, 아직 이 작업은 자동으로 취소할 수 없어.`,
-    );
-  }
-
-  const title =
-    typeof lastAction.data?.title ===
-    "string"
-      ? lastAction.data.title
-      : null;
-
-  const start =
-    typeof lastAction.data?.start ===
-    "string"
-      ? lastAction.data.start
-      : null;
-
-  const end =
-    typeof lastAction.data?.end ===
-    "string"
-      ? lastAction.data.end
-      : start;
-
-  if (
-    !title ||
-    !start ||
-    !end
-  ) {
-    return chatReply(
-      "방금 생성한 일정 정보가 부족해서 자동으로 취소할 수 없어.",
-    );
-  }
-
-  const range =
-    getCalendarCheckRange({
-      title,
-      start,
-      end,
-    });
-
-  const deleteRequest:
-    CalendarDeleteRequest = {
-      range,
-      target: {
-        title,
-        start,
-      },
-    };
-
-  console.log(
-    "[L-AI Memory] Cancel last calendar action:",
-    {
-      sessionId,
-      title,
-      start,
-    },
-  );
-
-  return handleCalendarDelete(
-    sessionId,
-    deleteRequest,
-  );
+if (lastActionResponse) {
+  return lastActionResponse;
 }
+
+/*
+ * ============================================================
+ * 5. CALENDAR DIRECT MEMORY REFERENCE
+ *
+ * 최근 Calendar 컨텍스트에 일정이 정확히 1개 있을 때,
+ * "그거", "방금꺼", "아까꺼" 같은 표현을
+ * AI Router보다 먼저 직접 해석한다.
+ *
+ * 예:
+ * "그거 오후 9시로 바꿔줘"
+ * "방금꺼 삭제해줘"
+ *
+ * 처리 대상:
+ * - Calendar update
+ * - Calendar delete
+ *
+ * IMPORTANT:
+ * 최근 일정이 정확히 1개일 때만 직접 참조한다.
+ * 여러 일정이 있을 때는 이 단계에서 임의로 고르지 않는다.
+ * ============================================================
+ */
 
 /*
  * 최근 Calendar 일정 직접 참조
@@ -1708,75 +1935,67 @@ if (
   }
 }
 
-const savedDriveContext =
-  getDriveContext(sessionId);
+/*
+ * ============================================================
+ * 6. DRIVE CONTEXT FOLLOW-UP
+ *
+ * 최근에 사용한 Drive 파일을 기준으로
+ * 후속 질문이나 요약 요청을 처리한다.
+ *
+ * 예:
+ * "그 파일 요약해줘"
+ * "그 파일 내용 알려줘"
+ * "아까 파일에서 뭐라고 했지?"
+ *
+ * 처리 흐름:
+ * - 최근 Drive 파일 컨텍스트 확인
+ * - 파일 내용 읽기
+ * - 후속 질문에 답변
+ * - drive_read / drive_summary last_action 저장
+ *
+ * IMPORTANT:
+ * 명시적으로 Drive 파일을 참조하는 후속 요청은
+ * AI Router보다 먼저 처리한다.
+ * ============================================================
+ */
 
-if (
-  savedDriveContext &&
-  isDriveContextFollowUp(message) &&
-  (
-    getExplicitMemoryTarget(rawMessage) ===
-      "drive_context" ||
-    !rememberedCalendarContext
-  )
-) {
-  console.log(
-    "[L-AI Memory] Priority selected: drive_context",
-    {
-      sessionId,
-      fileName: savedDriveContext.fileName,
-    },
-  );
-
-  const text = await readGoogleDriveFile(
-    savedDriveContext.fileId,
-  );
-
-  if (!text) {
-    return chatReply(
-      `'${savedDriveContext.fileName}' 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-    );
-  }
-
-  const answer = await answerDriveFileQuestion(
-    savedDriveContext.fileName,
-    text,
-    message,
-  );
-
-  const fileUrl =
-    savedDriveContext.webViewLink ||
-    `https://drive.google.com/open?id=${encodeURIComponent(
-      savedDriveContext.fileId,
-    )}`;
-
-  const isSummaryRequest =
-    /요약/u.test(rawMessage);
-
-  await saveLastAction(
+const driveContextFollowUpResponse =
+  await handleDriveContextFollowUp(
     sessionId,
-    {
-      type: isSummaryRequest
-        ? "drive_summary"
-        : "drive_read",
-      label: isSummaryRequest
-        ? `${savedDriveContext.fileName} 파일 요약`
-        : `${savedDriveContext.fileName} 내용 확인`,
-      data: {
-        fileId:
-          savedDriveContext.fileId,
-        fileName:
-          savedDriveContext.fileName,
-        webViewLink:
-          savedDriveContext.webViewLink,
-      },
-    },
+    rawMessage,
+    message,
+    Boolean(rememberedCalendarContext),
   );
 
-  return chatReply(
-    `**${savedDriveContext.fileName}에서 이어서 확인한 내용**\n\n${answer}\n\n[원본 파일 열기](${fileUrl})`,
-  );
+if (driveContextFollowUpResponse) {
+  return driveContextFollowUpResponse;
 }
+
+/*
+ * ============================================================
+ * 7. DRIVE → CALENDAR FLOW
+ *
+ * Drive 파일 안에서 일정 정보를 추출하고
+ * Calendar 등록 후보로 만드는 특수 흐름을 처리한다.
+ *
+ * 예:
+ * "그 파일에서 일정 찾아서 캘린더에 넣어줘"
+ * "1번 추가해줘"
+ * "전부 등록해줘"
+ *
+ * 처리 흐름:
+ * - Drive 파일 내용 분석
+ * - 일정 후보 추출
+ * - 후보 pending 저장
+ * - 번호 선택 / 전체 등록 / 취소 처리
+ * - Calendar 중복 일정 검사
+ *
+ * IMPORTANT:
+ * 이 흐름은 일반 AI Router보다 먼저 실행된다.
+ * 후보 선택 같은 짧은 후속 응답이
+ * 일반 대화로 처리되지 않게 해야 한다.
+ * ============================================================
+ */
 
 const earlyDriveCalendarResponse =
   await handleDriveCalendarFlow(
@@ -1787,6 +2006,29 @@ const earlyDriveCalendarResponse =
 if (earlyDriveCalendarResponse) {
   return earlyDriveCalendarResponse;
 }
+
+/*
+ * ============================================================
+ * 8. AI ROUTER
+ *
+ * 앞선 Memory / Pending / Context 전용 처리에서
+ * 해결되지 않은 요청을 중앙 AI Router로 전달한다.
+ *
+ * Router 역할:
+ * - 사용자 요청 intent 분류
+ * - normalizedMessage 생성
+ * - clarification 필요 여부 판단
+ *
+ * 이후 intent에 따라
+ * Calendar / Drive / 일반 AI 처리 흐름으로 분기한다.
+ *
+ * IMPORTANT:
+ * Calendar pending, last_action, 직접 참조,
+ * Drive follow-up 같은 명확한 컨텍스트 요청보다
+ * 뒤에서 실행되어야 한다.
+ * ============================================================
+ */
+
 let routedMessage:
   | Awaited<ReturnType<typeof routeUserMessage>>
   | null = null;
@@ -1855,6 +2097,32 @@ if (
 
   routedMessage = null;
 }
+
+/*
+ * ============================================================
+ * 9. DOMAIN EXECUTION
+ *
+ * AI Router가 분류한 intent를 기준으로
+ * 실제 기능별 실행 로직으로 전달한다.
+ *
+ * 현재 주요 Domain:
+ * - Calendar
+ * - Google Drive
+ * - 일반 AI 응답
+ *
+ * Calendar의 경우:
+ * Router가 intent를 먼저 판단한 뒤
+ * Calendar 전용 parser가 요청을 다시 해석하고 검증한다.
+ *
+ * IMPORTANT:
+ * Router의 intent 결과만 믿고 바로 외부 작업을 실행하지 않는다.
+ * 각 Domain의 기존 parser / validation / confirmation 흐름을
+ * 그대로 유지한다.
+ *
+ * Gmail / Tasks 등 새로운 기능도 앞으로
+ * 이 Domain Execution 영역에 연결한다.
+ * ============================================================
+ */
 
 /*
  * AI Router - Calendar 직접 실행
