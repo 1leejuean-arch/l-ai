@@ -4,7 +4,8 @@ export type MemoryType =
   | "calendar"
   | "drive"
   | "action"
-  | "conversation";
+  | "conversation"
+  | "brain";
 
 export type MemoryRecord<T = unknown> = {
   sessionId: string;

@@ -1,3 +1,10 @@
+import {
+  getActiveBrainTrace,
+  updateBrainTrace,
+} from "@/lib/brain/trace";
+
+import { createPlan } from "@/lib/brain/planner";
+import { createReflection } from "@/lib/brain/reflection";
 import "server-only";
 
 import { callCalendarN8n } from "@/lib/calendar/n8n";
@@ -169,6 +176,29 @@ export async function handleDriveCalendarFlow(
     selectedIndexes =
       addCommand.indexes;
   }
+
+const activeBrainTrace =
+  await getActiveBrainTrace(
+    sessionId,
+  );
+
+if (activeBrainTrace) {
+  await updateBrainTrace(
+    sessionId,
+    {
+      state: "executing",
+      waitingFor: null,
+    },
+  );
+
+  console.log(
+    "[L-AI Brain] Trace executing",
+    {
+      traceId:
+        activeBrainTrace.traceId,
+    },
+  );
+}
 
   const added: string[] = [];
   const duplicates: string[] = [];
@@ -445,6 +475,93 @@ export async function handleDriveCalendarFlow(
     );
   }
 
+const completionPlan =
+  createPlan({
+    message:
+      `${pending.fileName} 파일에서 추출한 일정을 캘린더에 등록해줘`,
+    intent: null,
+    confidence: null,
+  });
+
+const completedToolIds =
+  added.length > 0 ||
+  duplicates.length > 0
+    ? [
+        "drive.read",
+        "drive.calendar.extract",
+        "calendar.create",
+      ]
+    : [
+        "drive.read",
+        "drive.calendar.extract",
+      ];
+
+const completionReflection =
+  createReflection(
+    completionPlan,
+    {
+      completedToolIds,
+      failed:
+        added.length === 0 &&
+        failed.length > 0,
+    },
+  );
+
+console.log(
+  "[L-AI Brain] Execution Reflection",
+  {
+    ...completionReflection,
+    added: added.length,
+    duplicates:
+      duplicates.length,
+    failed:
+      failed.length,
+    remaining:
+      remainingEvents.length,
+  },
+);
+
+const traceState =
+  added.length === 0 &&
+  duplicates.length === 0 &&
+  failed.length > 0
+    ? "failed"
+    : remainingEvents.length > 0
+      ? "waiting"
+      : "success";
+
+const updatedTrace =
+  await updateBrainTrace(
+    sessionId,
+    {
+      state: traceState,
+
+      reflection:
+        completionReflection,
+
+      waitingFor:
+        traceState === "waiting"
+          ? "user_selection"
+          : null,
+    },
+  );
+
+if (updatedTrace) {
+  console.log(
+    "[L-AI Brain] Trace completed",
+    {
+      traceId:
+        updatedTrace.traceId,
+      state:
+        updatedTrace.state,
+      waitingFor:
+        updatedTrace.waitingFor,
+      remaining:
+        remainingEvents.length,
+    },
+  );
+}
+
   return reply(
     output.join("\n"),
   );
@@ -647,6 +764,54 @@ export async function handleDriveCalendarFlow(
       },
     },
   );
+
+const reflection =
+  createReflection(
+    createPlan({
+      message:
+        `${fileName} 파일에서 일정 찾아서 캘린더에 넣어줘`,
+      intent: null,
+      confidence: null,
+    }),
+    {
+      completedToolIds: [
+        "drive.read",
+        "drive.calendar.extract",
+      ],
+      waitingFor:
+        "user_confirmation",
+    },
+  );
+
+console.log(
+  "[L-AI Brain] Reflection",
+  reflection,
+);
+
+const waitingTrace =
+  await updateBrainTrace(
+    sessionId,
+    {
+      state: "waiting",
+      reflection,
+      waitingFor:
+        "user_selection",
+    },
+  );
+
+if (waitingTrace) {
+  console.log(
+    "[L-AI Brain] Trace state",
+    {
+      traceId:
+        waitingTrace.traceId,
+      state:
+        waitingTrace.state,
+      waitingFor:
+        waitingTrace.waitingFor,
+    },
+  );
+}
 
   return reply(
     `${formatDriveCalendarCandidates(

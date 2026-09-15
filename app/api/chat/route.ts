@@ -1,4 +1,9 @@
-
+import {
+  createBrainTrace,
+  getActiveBrainTrace,
+} from "@/lib/brain/trace";
+import { createReflection } from "@/lib/brain/reflection";
+import { createPlan } from "@/lib/brain/planner";
 import {
   getLastAction,
   getLastActionRecency,
@@ -2050,12 +2055,36 @@ async function handleRoutedCalendarIntent(
       );
 
     if (calendarResult.kind === "get") {
-      return handleCalendarGet(
-        sessionId,
-        calendarResult.range,
-        calendarResult.rangeLabel,
-      );
-    }
+  const response =
+    await handleCalendarGet(
+      sessionId,
+      calendarResult.range,
+      calendarResult.rangeLabel,
+    );
+
+  const reflection =
+    createReflection(
+      createPlan({
+        message: rawMessage,
+        intent: "calendar_get",
+        confidence:
+          routedMessage?.confidence ??
+          null,
+      }),
+      {
+        completedToolIds: [
+          "calendar.get",
+        ],
+      },
+    );
+
+  console.log(
+    "[L-AI Brain] Reflection",
+    reflection,
+  );
+
+  return response;
+}
 
     if (calendarResult.kind === "create") {
       setPendingCalendarAction(
@@ -2154,6 +2183,59 @@ async function handleChatRequest(request: Request, sessionId: string) {
 
   const rawMessage = body.message.trim();
 let message = rawMessage;
+
+const prePlan = createPlan({
+  message: rawMessage,
+  intent: null,
+  confidence: null,
+});
+
+console.log(
+  "[L-AI Brain] Pre-plan",
+  {
+    goal: prePlan.goal,
+    source: prePlan.source,
+    risk: prePlan.risk,
+    requiresConfirmation:
+      prePlan.requiresConfirmation,
+    confidence:
+      prePlan.confidence,
+    steps: prePlan.steps,
+  },
+);
+
+const existingBrainTrace =
+  await getActiveBrainTrace(
+    sessionId,
+  );
+
+const looksLikeBrainContinuation =
+  /(?:^\s*\d+\s*번|전부|모두|추가해|등록해|넣어줘|취소)/u.test(
+    rawMessage,
+  );
+
+const brainTrace =
+  existingBrainTrace &&
+  existingBrainTrace.state ===
+    "waiting" &&
+  looksLikeBrainContinuation
+    ? existingBrainTrace
+    : await createBrainTrace(
+        sessionId,
+        prePlan,
+      );
+
+console.log(
+  "[L-AI Brain] Trace",
+  {
+    traceId:
+      brainTrace.traceId,
+    state:
+      brainTrace.state,
+    goal:
+      brainTrace.goal,
+  },
+);
 
 /*
  * ============================================================
@@ -2413,6 +2495,28 @@ const routedMessage =
   routerResult.routedMessage;
 
 message = routerResult.message;
+
+const brainPlan = createPlan({
+  message: rawMessage,
+  intent:
+    routedMessage?.intent ?? null,
+  confidence:
+    routedMessage?.confidence ?? null,
+});
+
+console.log(
+  "[L-AI Brain] Planner observation",
+  {
+    goal: brainPlan.goal,
+    source: brainPlan.source,
+    risk: brainPlan.risk,
+    requiresConfirmation:
+      brainPlan.requiresConfirmation,
+    confidence:
+      brainPlan.confidence,
+    steps: brainPlan.steps,
+  },
+);
 
 /*
  * ============================================================
