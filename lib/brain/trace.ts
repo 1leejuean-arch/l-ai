@@ -1,6 +1,8 @@
 import {
+  deleteMemory,
   getMemory,
   saveMemory,
+  saveMemoryAndWait,
 } from "@/lib/memory/context";
 
 import type {
@@ -18,6 +20,17 @@ export type BrainTraceState =
   | "success"
   | "failed";
 
+  export type BrainTraceHistoryEntry = {
+  state: BrainTraceState;
+
+  waitingFor:
+    | "user_confirmation"
+    | "user_selection"
+    | "user_clarification"
+    | null;
+
+  at: string;
+};
 export type BrainTrace = {
   traceId: string;
 
@@ -38,6 +51,8 @@ export type BrainTrace = {
     | null;
 
   startedAt: string;
+
+history: BrainTraceHistoryEntry[];
 
   updatedAt: string;
 };
@@ -68,6 +83,14 @@ export async function createBrainTrace(
 
     startedAt: now,
 
+history: [
+  {
+    state: "planning",
+    waitingFor: null,
+    at: now,
+  },
+],
+    
     updatedAt: now,
   };
 
@@ -111,13 +134,40 @@ export async function updateBrainTrace(
     return null;
   }
 
-  const updated: BrainTrace = {
-    ...current,
-    ...patch,
+  const updatedAt =
+  new Date().toISOString();
 
-    updatedAt:
-      new Date().toISOString(),
-  };
+const nextState =
+  patch.state ?? current.state;
+
+const nextWaitingFor =
+  patch.waitingFor !== undefined
+    ? patch.waitingFor
+    : current.waitingFor;
+
+const stateChanged =
+  nextState !== current.state ||
+  nextWaitingFor !==
+    current.waitingFor;
+
+const updated: BrainTrace = {
+  ...current,
+  ...patch,
+
+  history: stateChanged
+    ? [
+        ...current.history,
+        {
+          state: nextState,
+          waitingFor:
+            nextWaitingFor,
+          at: updatedAt,
+        },
+      ]
+    : current.history,
+
+  updatedAt,
+};
 
   await saveMemory(
     sessionId,
@@ -127,4 +177,61 @@ export async function updateBrainTrace(
   );
 
   return updated;
+}
+
+export async function completeBrainTrace(
+  sessionId: string,
+  reflection?: ReflectionResult,
+) {
+  const completed =
+    await updateBrainTrace(
+      sessionId,
+      {
+        state: "success",
+        waitingFor: null,
+        ...(reflection
+          ? { reflection }
+          : {}),
+      },
+    );
+
+  if (!completed) {
+    return null;
+  }
+
+  await saveMemoryAndWait(
+  sessionId,
+  "brain",
+  "last_trace",
+  completed,
+);
+
+  await deleteMemory(
+    sessionId,
+    "brain",
+    "active_trace",
+  );
+
+  console.log(
+    "[L-AI Brain] Trace archived",
+    {
+      traceId:
+        completed.traceId,
+      state:
+        completed.state,
+    },
+  );
+
+  return completed;
+}  
+
+export async function getLastBrainTrace(
+  sessionId: string,
+) {
+  return getMemory<BrainTrace>(
+    sessionId,
+    "brain",
+    "last_trace",
+    BRAIN_TRACE_TTL_MS,
+  );
 }

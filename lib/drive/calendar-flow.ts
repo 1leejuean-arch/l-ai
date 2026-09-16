@@ -1,4 +1,5 @@
 import {
+  completeBrainTrace,
   getActiveBrainTrace,
   updateBrainTrace,
 } from "@/lib/brain/trace";
@@ -530,21 +531,40 @@ const traceState =
       ? "waiting"
       : "success";
 
-const updatedTrace =
+let updatedTrace;
+
+if (traceState === "success") {
   await updateBrainTrace(
     sessionId,
     {
-      state: traceState,
-
       reflection:
         completionReflection,
-
-      waitingFor:
-        traceState === "waiting"
-          ? "user_selection"
-          : null,
+      waitingFor: null,
     },
   );
+
+  updatedTrace =
+     await completeBrainTrace(
+    sessionId,
+    completionReflection,
+  );
+} else {
+  updatedTrace =
+    await updateBrainTrace(
+      sessionId,
+      {
+        state: traceState,
+
+        reflection:
+          completionReflection,
+
+        waitingFor:
+          traceState === "waiting"
+            ? "user_selection"
+            : null,
+      },
+    );
+}
 
 if (updatedTrace) {
   console.log(

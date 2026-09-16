@@ -76,11 +76,12 @@ function isStoredMemoryRow(
   return (
     typeof record.session_id === "string" &&
     (
-      record.memory_type === "calendar" ||
-      record.memory_type === "drive" ||
-      record.memory_type === "action" ||
-      record.memory_type === "conversation"
-    ) &&
+  record.memory_type === "calendar" ||
+  record.memory_type === "drive" ||
+  record.memory_type === "action" ||
+  record.memory_type === "conversation" ||
+  record.memory_type === "brain"
+) &&
     typeof record.memory_key === "string" &&
     typeof record.updated_at === "string"
   );

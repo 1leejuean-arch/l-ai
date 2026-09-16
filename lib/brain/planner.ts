@@ -137,6 +137,27 @@ function planFromMessage(
   const normalized =
     message.toLowerCase();
 
+const isContinuationSelection =
+  /^\s*\d+\s*번(?:\s*(?:추가|등록|넣어|선택))?/u.test(
+    normalized,
+  ) ||
+  /^(?:전부|모두|전체)\s*(?:추가|등록|넣어)/u.test(
+    normalized,
+  ) ||
+  /^(?:취소|그만|안\s*할래)/u.test(
+    normalized,
+  );
+
+if (isContinuationSelection) {
+  return [
+    buildStep(
+      1,
+      "calendar.create",
+      "사용자가 이전 작업에서 대기 중인 일정 후보의 후속 선택 또는 등록 명령을 보냈다.",
+    ),
+  ];
+}
+
   const mentionsDrive =
     /(?:드라이브|drive|파일|문서)/u.test(
       normalized,

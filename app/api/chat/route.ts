@@ -1,7 +1,10 @@
+
 import {
   createBrainTrace,
   getActiveBrainTrace,
+  getLastBrainTrace,
 } from "@/lib/brain/trace";
+
 import { createReflection } from "@/lib/brain/reflection";
 import { createPlan } from "@/lib/brain/planner";
 import {
@@ -9,11 +12,13 @@ import {
   getLastActionRecency,
   saveLastAction,
 } from "@/lib/memory/action";
+
 import { getMemory } from "@/lib/memory/context";
 import {
   getCalendarCheckRange,
   isDuplicateCalendarEvent,
 } from "@/lib/drive/calendar-register";
+
 import { routeUserMessage } from "@/lib/ai/router";
 import {
   clearCalendarContext,
@@ -21,15 +26,18 @@ import {
   hydrateCalendarContext,
   saveCalendarContext,
 } from "@/lib/calendar/context";
+
 import {
   handleDriveCalendarFlow,
 } from "@/lib/drive/calendar-flow";
+
 import {
   getDriveContext,
   hydrateDriveContext,
   isDriveContextFollowUp,
   saveDriveContext,
 } from "@/lib/drive/context";
+
 import type {
   ChatApiError,
   ChatApiResponse,
@@ -2168,6 +2176,55 @@ async function handleRoutedCalendarIntent(
   }
 }
 
+async function handleBrainTraceRecall(
+  sessionId: string,
+  rawMessage: string,
+) {
+  const normalized =
+    rawMessage.trim().toLowerCase();
+
+  const brainRecallPattern =
+    /(?:방금\s*작업|마지막\s*작업|아까\s*하던\s*거|작업\s*어떻게\s*됐|작업\s*성공|작업\s*실패)/u;
+
+  if (!brainRecallPattern.test(normalized)) {
+    return null;
+  }
+
+  const trace =
+    await getLastBrainTrace(
+      sessionId,
+    );
+
+  if (!trace) {
+    return chatReply(
+      "최근에 완료된 작업 기록을 찾지 못했어.",
+    );
+  }
+
+  const stateLabel =
+    trace.state === "success"
+      ? "성공"
+      : trace.state === "failed"
+        ? "실패"
+        : trace.state;
+
+  const completedSteps =
+    trace.reflection
+      ?.completedSteps
+      ?.join(", ") ??
+    "기록 없음";
+
+  return chatReply(
+    [
+      `마지막 작업은 **${stateLabel}** 상태로 끝났어.`,
+      "",
+      `작업 목표: ${trace.goal}`,
+      `완료 단계: ${completedSteps}`,
+      `Trace ID: ${trace.traceId}`,
+    ].join("\n"),
+  );
+}
+
 async function handleChatRequest(request: Request, sessionId: string) {
   let body: unknown;
 
@@ -2181,8 +2238,18 @@ async function handleChatRequest(request: Request, sessionId: string) {
     return chatError("message 값을 입력해 주세요.", 400);
   }
 
-  const rawMessage = body.message.trim();
+ const rawMessage = body.message.trim();
 let message = rawMessage;
+
+const brainTraceRecallResponse =
+  await handleBrainTraceRecall(
+    sessionId,
+    rawMessage,
+  );
+
+if (brainTraceRecallResponse) {
+  return brainTraceRecallResponse;
+}
 
 const prePlan = createPlan({
   message: rawMessage,
@@ -2311,6 +2378,7 @@ const calendarPendingResponse =
 if (calendarPendingResponse) {
   return calendarPendingResponse;
 }
+
 
 /*
  * ============================================================
