@@ -5,7 +5,8 @@ export type MemoryType =
   | "drive"
   | "action"
   | "conversation"
-  | "brain";
+  | "brain"
+  | "profile";
 
 export type MemoryRecord<T = unknown> = {
   sessionId: string;
@@ -77,10 +78,11 @@ function isStoredMemoryRow(
     typeof record.session_id === "string" &&
     (
   record.memory_type === "calendar" ||
-  record.memory_type === "drive" ||
-  record.memory_type === "action" ||
-  record.memory_type === "conversation" ||
-  record.memory_type === "brain"
+record.memory_type === "drive" ||
+record.memory_type === "action" ||
+record.memory_type === "conversation" ||
+record.memory_type === "brain" ||
+record.memory_type === "profile"
 ) &&
     typeof record.memory_key === "string" &&
     typeof record.updated_at === "string"

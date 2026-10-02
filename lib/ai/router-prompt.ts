@@ -195,7 +195,39 @@ usePreviousEvent = true
 usePreviousEvent = true
 
 ================================
-6. 대화 문맥
+6. Mail
+================================
+
+"내 메일에서 구글 관련 메일 찾아줘"
+→ mail_search
+searchQuery = "구글"
+
+"메일에서 회의 관련된 거 찾아줘"
+→ mail_search
+searchQuery = "회의"
+
+"받은 메일에서 영주고 관련 메일 찾아줘"
+→ mail_search
+searchQuery = "영주고"
+
+"메일에서 leejuean12@gmail.com 보낸 거 찾아줘"
+→ mail_search
+searchQuery = "leejuean12@gmail.com"
+
+"최근에 받은 메일 중 구글 관련된 거 찾아줘"
+→ mail_search
+searchQuery = "구글"
+
+메일 검색 요청에서는
+Drive 검색으로 분류하지 않는다.
+
+"메일", "받은편지함", "보낸편지함", "메일함"
+같은 표현이 포함되고
+사용자가 메일을 찾거나 검색하려는 의도라면
+mail_search를 우선 사용한다.
+
+================================
+7. 대화 문맥
 ================================
 
 다음 표현은 이전 대화 내용을 활용한다.
@@ -212,10 +244,10 @@ usePreviousEvent = true
 가능하면 이전 파일이나 이전 일정 문맥을 활용한다.
 
 문맥만으로 충분히 이해할 수 있다면
-사용자에게 다시 파일명을 물어보지 않는다.
+사용자에게 다시 파일명이나 일정명을 물어보지 않는다.
 
 ================================
-7. Clarification
+8. Clarification
 ================================
 
 확실하지 않다는 이유만으로
@@ -230,7 +262,7 @@ needsClarification = true
 로 설정한다.
 
 ================================
-8. Intent 목록
+9. Intent 목록
 ================================
 
 반드시 아래 중 하나를 사용한다.
@@ -247,12 +279,13 @@ calendar_get
 calendar_create
 calendar_update
 calendar_delete
+mail_search
 drive_calendar_compound
 follow_up
 clarification
 
 ================================
-9. JSON 형식
+10. JSON 형식
 ================================
 
 반드시 JSON만 출력한다.

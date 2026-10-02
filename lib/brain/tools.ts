@@ -6,10 +6,11 @@ export type ToolRiskLevel =
 export type LAlTool = {
   id: string;
   domain:
-    | "calendar"
-    | "drive"
-    | "system"
-    | "ai";
+  | "calendar"
+  | "drive"
+  | "mail"
+  | "system"
+  | "ai";
   name: string;
   description: string;
   risk: ToolRiskLevel;
@@ -103,6 +104,16 @@ export const L_AI_TOOLS: LAlTool[] = [
     name: "Drive 일정 추출",
     description:
       "Drive 파일 내용에서 Calendar 일정 후보를 추출한다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "mail.search",
+    domain: "mail",
+    name: "L-JMAIL 메일 검색",
+    description:
+      "L-JMAIL에서 제목, 본문, 발신자 등을 기준으로 메일을 검색한다.",
     risk: "low",
     requiresConfirmation: false,
   },

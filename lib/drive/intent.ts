@@ -21,15 +21,12 @@ const COMBINE_PATTERN =
 const QUESTION_END_PATTERN =
   /(?:알려\s*줘|알려줘|말해\s*줘|말해줘|뽑아\s*줘|뽑아줘|정리해\s*줘|정리해줘|찾아\s*줘|찾아줘|뭐야|언제야|누구야|어디야|어때|있어)/u;
 
-const SEARCH_COMMAND_PATTERN =
-  /\s*(?:찾아\s*줘|찾아줘|검색해\s*줘|검색해줘|보여\s*줘|보여줘|있어)\s*[?.!。！？]*$/u;
-
-const SUMMARY_COMMAND_PATTERN =
-  /\s*(?:찾아서\s*)?(?:내용을?\s*)?(?:요약해\s*줘|요약해줘|요약\s*해줘|요약해|요약)\s*[?.!。！？]*$/u;
-
 function removeDriveContext(message: string) {
   return message
-    .replace(/(?:내\s*)?(?:구글\s*)?드라이브|google\s*drive/giu, " ")
+    .replace(
+  /(?:내\s*)?(?:(?:구글\s*)?드라이브|google\s*drive)/giu,
+  " ",
+)
     .replace(/^\s*(?:에서|에|있는)\s*/u, "")
     .replace(/\s+/gu, " ")
     .trim();

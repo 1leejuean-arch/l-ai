@@ -28,7 +28,9 @@ export type LastActionType =
   | "drive_read"
   | "drive_summary"
   | "drive_calendar"
-  | "drive_calendar_extract";
+  | "drive_calendar_extract"
+  | "memory_recall"
+  | "mail_search";
 
 export type LastActionMemory = {
   type: LastActionType;

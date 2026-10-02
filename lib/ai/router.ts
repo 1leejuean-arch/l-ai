@@ -20,6 +20,11 @@ import type {
 type RouterContext = {
   previousFileName?: string | null;
   previousEventTitle?: string | null;
+
+  contextDomain?: string | null;
+  contextAction?: string | null;
+  contextConfidence?: number | null;
+  contextReason?: string | null;
 };
 
 export async function routeUserMessage(
@@ -46,6 +51,12 @@ ${context?.previousFileName || "없음"}
 
 이전 Calendar 일정:
 ${context?.previousEventTitle || "없음"}
+
+Context Resolver 판단:
+domain: ${context?.contextDomain || "없음"}
+action: ${context?.contextAction || "없음"}
+confidence: ${context?.contextConfidence ?? "없음"}
+reason: ${context?.contextReason || "없음"}
 
 사용자의 실제 의도를 분석해서 JSON으로 반환해.
 `,

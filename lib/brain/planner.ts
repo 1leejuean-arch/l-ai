@@ -107,12 +107,21 @@ function planFromIntent(
         ),
       ];
 
-    case "drive_search":
+        case "drive_search":
       return [
         buildStep(
           1,
           "drive.search",
           "사용자가 Google Drive 파일 검색을 요청했다.",
+        ),
+      ];
+
+    case "mail_search":
+      return [
+        buildStep(
+          1,
+          "mail.search",
+          "사용자가 L-JMAIL 메일 검색을 요청했다.",
         ),
       ];
 

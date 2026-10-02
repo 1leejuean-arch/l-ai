@@ -42,7 +42,9 @@ function isChatApiError(value: unknown): value is ChatApiError {
 export function Chat() {
   const [messages, setMessages] = useState<Message[]>([INITIAL_MESSAGE]);
   const [input, setInput] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
+const [selectedFile, setSelectedFile] =
+  useState<File | null>(null);
+const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -61,6 +63,7 @@ export function Chat() {
       { id: createMessageId(), role: "user", content: message },
     ]);
     setInput("");
+    setSelectedFile(null);
     setIsLoading(true);
 
     try {
@@ -71,13 +74,23 @@ if (!sessionId) {
   localStorage.setItem("l-ai-session-id", sessionId);
 }
 
+const formData = new FormData();
+
+formData.append("message", message);
+
+if (selectedFile) {
+  formData.append(
+    "file",
+    selectedFile,
+  );
+}
+
 const response = await fetch("/api/chat", {
   method: "POST",
   headers: {
-    "Content-Type": "application/json",
     "x-session-id": sessionId,
   },
-  body: JSON.stringify({ message }),
+  body: formData,
 });
     const rawText = await response.text();
 
@@ -167,12 +180,15 @@ if (!isChatApiResponse(data)) {
       </section>
 
       <footer className="shrink-0 border-t border-white/[0.04] bg-gradient-to-t from-[#070a0f] via-[#070a0f] to-[#070a0f]/90 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6 sm:pt-4">
-        <ChatComposer
-          value={input}
-          isLoading={isLoading}
-          onChange={setInput}
-          onSubmit={sendMessage}
-        />
+       
+<ChatComposer
+  value={input}
+  isLoading={isLoading}
+  selectedFile={selectedFile}
+  onChange={setInput}
+  onFileChange={setSelectedFile}
+  onSubmit={sendMessage}
+/>
       </footer>
     </div>
   );

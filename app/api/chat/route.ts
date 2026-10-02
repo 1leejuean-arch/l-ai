@@ -1,3 +1,38 @@
+import {
+  formatSelfCheckReport,
+  runSelfCheck,
+} from "@/lib/diagnostics/self-check";
+
+import {
+  appendLearningProfileEntry,
+  clearPendingLearningCandidates,
+  clearPendingLearningConflict,
+  deleteLearningFact,
+  deleteMostRecentLearningFact,
+  getLearningFact,
+  getLearningHistory,
+  getLearningFacts,
+  getLearningMode,
+  getPendingLearningCandidates,
+  getPendingLearningConflict,
+  setLearningMode,
+  setPendingLearningCandidates,
+  setPendingLearningConflict,
+  undoLatestLearningChange,
+  upsertLearningFacts,
+} from "@/lib/memory/learning";
+
+import {
+  extractLearningCandidateEdits,
+  extractLearningDeleteTarget,
+  extractProfileFacts,
+  extractProfileFactsFromFile,
+  interpretMemoryRequest,
+} from "@/lib/memory/learning-ai";
+
+import {
+  searchLJmail,
+} from "@/lib/mail/client";
 
 import {
   createBrainTrace,
@@ -20,6 +55,16 @@ import {
 } from "@/lib/drive/calendar-register";
 
 import { routeUserMessage } from "@/lib/ai/router";
+
+import {
+  buildContextSummary,
+  resolveConversationContext,
+} from "@/lib/context/resolver";
+
+import type {
+  ContextSnapshot,
+} from "@/lib/context/resolver";
+
 import {
   clearCalendarContext,
   getCalendarContext,
@@ -48,9 +93,12 @@ import {
   combineDriveFiles,
   compareDriveFiles,
   generateAssistantReply,
+  generateAssistantReplyWithFile,
+  generateAssistantReplyWithImage,
   summarizeDriveFile,
   OpenAIConfigurationError,
 } from "@/lib/ai/openai";
+
 import {
   formatCalendarCandidateSelection,
   formatCalendarConfirmation,
@@ -81,10 +129,7 @@ import {
   setPendingCalendarAction,
   takePendingCalendarAction,
 } from "@/lib/calendar/pending";
-import {
-  attachCalendarSession,
-  getCalendarSession,
-} from "@/lib/calendar/session";
+
 import type {
   CalendarDeleteRequest,
   CalendarEvent,
@@ -1087,19 +1132,50 @@ async function handleCalendarGet(
     saveCalendarContext(sessionId, {
       rangeLabel,
       events: events
-        .filter(
-          (event) =>
-            event.start?.dateTime &&
-            event.end?.dateTime,
-        )
-        .map((event) => ({
-          title:
-            event.summary?.trim() ||
-            "제목 없는 일정",
-          start: event.start.dateTime!,
-          end: event.end.dateTime!,
-        })),
+  .map((event) => {
+    const start =
+      event.start?.dateTime ??
+      event.start?.date ??
+      null;
+
+    const end =
+      event.end?.dateTime ??
+      event.end?.date ??
+      null;
+
+    if (!start || !end) {
+      return null;
+    }
+
+    return {
+      title:
+        event.summary?.trim() ||
+        "제목 없는 일정",
+      start,
+      end,
+    };
+  })
+  .filter(
+    (
+      event,
+    ): event is {
+      title: string;
+      start: string;
+      end: string;
+    } => event !== null,
+  ),
     });
+
+await saveLastAction(
+  sessionId,
+  {
+    type: "calendar_get",
+    label: `${rangeLabel} 일정 조회`,
+    data: {
+      rangeLabel,
+    },
+  },
+);
 
     return chatReply(
       formatCalendarEvents(
@@ -1562,10 +1638,14 @@ async function handleCalendarDirectMemoryReference(
     rememberedCalendarContext.events[0];
 
   if (
-    calendarUpdateWordPattern.test(
-      rawMessage,
-    )
-  ) {
+  !calendarDeleteWordPattern.test(
+    rawMessage,
+  ) &&
+  calendarUpdateWordPattern.test(
+    rawMessage,
+  )
+) {
+
     console.log(
       "[Calendar Direct Reference: Update]",
       {
@@ -1605,10 +1685,11 @@ async function handleCalendarDirectMemoryReference(
   }
 
   if (
-    calendarDeleteWordPattern.test(
-      rawMessage,
-    )
-  ) {
+  calendarDeleteWordPattern.test(
+    rawMessage,
+  )
+) {
+
     console.log(
       "[Calendar Direct Reference: Delete]",
       {
@@ -1934,6 +2015,10 @@ async function preprocessDriveCalendarCrossContext(
 async function handleAiRouter(
   sessionId: string,
   currentMessage: string,
+  previousBrainTrace:
+    Awaited<
+      ReturnType<typeof getActiveBrainTrace>
+    >,
 ) {
   let message = currentMessage;
 
@@ -1945,6 +2030,100 @@ async function handleAiRouter(
     const driveContextForRouter =
       getDriveContext(sessionId);
 
+    const calendarContextForRouter =
+      getCalendarContext(sessionId);
+
+    const [
+  lastActionForContext,
+  learningHistoryForContext,
+] = await Promise.all([
+  getLastAction(sessionId),
+  getLearningHistory(sessionId),
+]);
+
+    const latestLearningChange =
+      learningHistoryForContext[0] ?? null;
+
+    const contextSnapshot: ContextSnapshot = {
+      lastAction: lastActionForContext
+        ? {
+            type: lastActionForContext.type,
+            label: lastActionForContext.label,
+          }
+        : null,
+
+      memory: {
+        latestChange: latestLearningChange
+          ? {
+              category:
+                latestLearningChange.category,
+              key: latestLearningChange.key,
+              previousValue:
+                latestLearningChange.previousValue,
+              nextValue:
+                latestLearningChange.nextValue,
+            }
+          : null,
+      },
+
+      calendar: calendarContextForRouter
+        ? {
+            recentEvents:
+              calendarContextForRouter.events
+                .slice(0, 5)
+                .map((event) => ({
+                  id: null,
+                  summary: event.title,
+                  start: event.start,
+                })),
+          }
+        : null,
+
+      drive: driveContextForRouter
+        ? {
+            recentFile: {
+              id: driveContextForRouter.fileId,
+              name: driveContextForRouter.fileName,
+            },
+          }
+        : null,
+
+      mail: null,
+
+      brain: previousBrainTrace
+  ? {
+      goal: previousBrainTrace.goal,
+      state: previousBrainTrace.state,
+    }
+  : null,
+    };
+
+const contextSummary =
+  buildContextSummary(contextSnapshot);
+
+  console.log(
+  "[L-AI Context Summary]",
+  contextSummary,
+);
+
+const contextResolution =
+  await resolveConversationContext(
+    message,
+    contextSummary,
+  );
+
+console.log(
+  "[L-AI Context Resolver]",
+  {
+    original: message,
+    domain: contextResolution.domain,
+    action: contextResolution.action,
+    confidence:
+      contextResolution.confidence,
+    reason: contextResolution.reason,
+  },
+);
+
     console.log(
       "[L-AI Memory] Priority selected: ai_router",
       {
@@ -1952,14 +2131,145 @@ async function handleAiRouter(
       },
     );
 
-    routedMessage = await routeUserMessage(
-      message,
-      {
-        previousFileName:
-          driveContextForRouter?.fileName ??
-          null,
-      },
-    );
+const isContextReferenceAction =
+  contextResolution.action === "repeat" ||
+  contextResolution.action === "reference" ||
+  contextResolution.action === "reuse_previous";
+
+const lastActionDomain =
+  lastActionForContext?.type === "memory_recall"
+    ? "memory"
+    : lastActionForContext?.type.startsWith("drive_")
+      ? "drive"
+      : lastActionForContext?.type.startsWith("calendar_")
+        ? "calendar"
+        : lastActionForContext?.type.startsWith("mail_")
+          ? "mail"
+          : null;
+
+const canFallbackToLastAction =
+  contextResolution.domain === "unknown" &&
+  isContextReferenceAction &&
+  contextResolution.confidence >= 0.7 &&
+  lastActionDomain !== null;
+
+const effectiveContextDomain =
+  canFallbackToLastAction
+    ? lastActionDomain
+    : contextResolution.domain;
+
+    console.log(
+  "[L-AI Context Effective]",
+  {
+    resolverDomain:
+      contextResolution.domain,
+    effectiveDomain:
+      effectiveContextDomain,
+    action:
+      contextResolution.action,
+    confidence:
+      contextResolution.confidence,
+    usedLastActionFallback:
+      canFallbackToLastAction,
+    lastActionType:
+      lastActionForContext?.type ?? null,
+  },
+);
+
+const shouldUseContextResolution =
+  (
+    contextResolution.confidence >= 0.85 &&
+    contextResolution.action !== "none" &&
+    contextResolution.domain !== "unknown"
+  ) ||
+  canFallbackToLastAction;
+
+const previousDriveQuery =
+  lastActionForContext?.type === "drive_search" &&
+  typeof lastActionForContext.data?.query === "string"
+    ? lastActionForContext.data.query.trim()
+    : null;
+
+const previousMemoryQuery =
+  lastActionForContext?.type === "memory_recall" &&
+  typeof lastActionForContext.data?.query === "string"
+    ? lastActionForContext.data.query.trim()
+    : null;
+
+const previousCalendarRangeLabel =
+  lastActionForContext?.type === "calendar_get" &&
+  typeof lastActionForContext.data?.rangeLabel === "string"
+    ? lastActionForContext.data.rangeLabel.trim()
+    : null;
+
+const isGenericDriveContinuationRequest =
+  /^(?:계속해|계속|마저\s*해(?:줘)?|아까\s*하던\s*거\s*(?:마저\s*)?해(?:줘)?|하던\s*거\s*(?:계속|마저\s*해(?:줘)?))$/u.test(
+    message.trim(),
+  );
+
+const previousMailQuery =
+  lastActionForContext?.type === "mail_search" &&
+  typeof lastActionForContext.data?.query === "string"
+    ? lastActionForContext.data.query.trim()
+    : null;
+
+const messageForRouter =
+  shouldUseContextResolution &&
+  effectiveContextDomain === "memory" &&
+  contextResolution.action === "repeat" &&
+  previousMemoryQuery
+    ? previousMemoryQuery
+    : shouldUseContextResolution &&
+        effectiveContextDomain === "calendar" &&
+        contextResolution.action === "repeat" &&
+        previousCalendarRangeLabel
+      ? `${previousCalendarRangeLabel} 보여줘`
+      : shouldUseContextResolution &&
+          effectiveContextDomain === "drive" &&
+(
+  contextResolution.action === "repeat" ||
+  (
+    contextResolution.action === "continue" &&
+    isGenericDriveContinuationRequest
+  )
+) &&
+previousDriveQuery
+        ? `내 Google Drive에서 ${previousDriveQuery} 파일을 찾아줘`
+        : shouldUseContextResolution &&
+            effectiveContextDomain === "mail" &&
+            contextResolution.action === "repeat" &&
+            previousMailQuery
+          ? `내 메일에서 ${previousMailQuery} 관련 메일을 찾아줘`
+          : message;
+
+routedMessage = await routeUserMessage(
+  messageForRouter,
+  {
+    previousFileName:
+      driveContextForRouter?.fileName ??
+      null,
+
+    contextDomain:
+      shouldUseContextResolution
+        ? effectiveContextDomain
+        : null,
+
+    contextAction:
+      shouldUseContextResolution
+        ? contextResolution.action
+        : null,
+
+    contextConfidence:
+      shouldUseContextResolution
+        ? contextResolution.confidence
+        : null,
+
+    contextReason:
+      shouldUseContextResolution
+        ? contextResolution.reason
+        : null,
+  },
+);
 
     if (routedMessage) {
       console.log("[AI Router]", {
@@ -2049,12 +2359,12 @@ async function handleRoutedCalendarIntent(
       );
 
     const calendarMessage =
-      referencedMessage !== rawMessage
-        ? referencedMessage
-        : buildCalendarContextMessage(
-            sessionId,
-            rawMessage,
-          );
+  referencedMessage !== rawMessage
+    ? referencedMessage
+    : buildCalendarContextMessage(
+        sessionId,
+        message,
+      );
 
     const calendarResult =
       await parseCalendarRequest(
@@ -2070,21 +2380,28 @@ async function handleRoutedCalendarIntent(
       calendarResult.rangeLabel,
     );
 
-  const reflection =
-    createReflection(
-      createPlan({
-        message: rawMessage,
-        intent: "calendar_get",
-        confidence:
-          routedMessage?.confidence ??
-          null,
-      }),
-      {
-        completedToolIds: [
-          "calendar.get",
-        ],
-      },
-    );
+  const calendarGetSucceeded =
+  response.ok;
+
+const reflection =
+  createReflection(
+    createPlan({
+      message: rawMessage,
+      intent: "calendar_get",
+      confidence:
+        routedMessage?.confidence ??
+        null,
+    }),
+    calendarGetSucceeded
+      ? {
+          completedToolIds: [
+            "calendar.get",
+          ],
+        }
+      : {
+          failed: true,
+        },
+  );
 
   console.log(
     "[L-AI Brain] Reflection",
@@ -2184,8 +2501,7 @@ async function handleBrainTraceRecall(
     rawMessage.trim().toLowerCase();
 
   const brainRecallPattern =
-    /(?:방금\s*작업|마지막\s*작업|아까\s*하던\s*거|작업\s*어떻게\s*됐|작업\s*성공|작업\s*실패)/u;
-
+  /(?:방금\s*작업|마지막\s*작업|작업\s*어떻게\s*됐|작업\s*성공|작업\s*실패)/u;
   if (!brainRecallPattern.test(normalized)) {
     return null;
   }
@@ -2226,20 +2542,1371 @@ async function handleBrainTraceRecall(
 }
 
 async function handleChatRequest(request: Request, sessionId: string) {
+  let rawMessage = "";
+let uploadedFile: File | null = null;
+
+const contentType =
+  request.headers.get("content-type") ?? "";
+
+if (
+  contentType.includes(
+    "multipart/form-data",
+  )
+) {
+  try {
+    const formData =
+      await request.formData();
+
+    const messageValue =
+      formData.get("message");
+
+    const fileValue =
+      formData.get("file");
+
+    rawMessage =
+      typeof messageValue === "string"
+        ? messageValue.trim()
+        : "";
+
+    if (fileValue instanceof File) {
+      uploadedFile = fileValue;
+    }
+  } catch {
+    return chatError(
+      "파일 첨부 요청을 읽지 못했어.",
+      400,
+    );
+  }
+} else {
   let body: unknown;
 
   try {
     body = await request.json();
   } catch {
-    return chatError("올바른 JSON 요청이 필요합니다.", 400);
+    return chatError(
+      "올바른 요청 형식이 필요해.",
+      400,
+    );
   }
 
   if (!isChatRequestBody(body)) {
-    return chatError("message 값을 입력해 주세요.", 400);
+    return chatError(
+      "message 값을 입력해줘.",
+      400,
+    );
   }
 
- const rawMessage = body.message.trim();
+  rawMessage =
+    body.message.trim();
+}
+
+if (!rawMessage) {
+  return chatError(
+    "message 값을 입력해줘.",
+    400,
+  );
+}
+
+if (uploadedFile) {
+  console.log(
+    "[L-AI Attachment] Received:",
+    {
+      name: uploadedFile.name,
+      type: uploadedFile.type,
+      size: uploadedFile.size,
+    },
+  );
+}
+
+const looksLikeFileLearningRequest =
+  Boolean(uploadedFile) &&
+  /(?:기억|기억해|기억해줘|저장|저장해|저장해줘|장기기억|나에\s*대한\s*정보|내\s*정보)/u.test(
+    rawMessage,
+  );
+
+if (
+  uploadedFile &&
+  looksLikeFileLearningRequest
+) {
+  try {
+    const arrayBuffer =
+      await uploadedFile.arrayBuffer();
+
+    const fileBase64 =
+      Buffer.from(
+        arrayBuffer,
+      ).toString("base64");
+
+    const facts =
+      await extractProfileFactsFromFile(
+        rawMessage,
+        fileBase64,
+        uploadedFile.name,
+        uploadedFile.type,
+      );
+
+    if (facts.length === 0) {
+      return chatReply(
+        "이 파일에서는 장기기억 후보로 저장할 만한 사용자 정보를 찾지 못했어.",
+      );
+    }
+
+    const pendingFacts =
+      facts.map((fact) => ({
+        category: fact.category,
+        key: fact.key,
+        value: fact.value,
+        updatedAt: Date.now(),
+      }));
+
+    await setPendingLearningCandidates(
+      sessionId,
+      pendingFacts,
+    );
+
+    const lines =
+      pendingFacts.map(
+        (fact) =>
+          `- **${fact.value}**`,
+      );
+
+    return chatReply(
+      [
+        "이 파일에서 장기기억 후보를 찾았어.",
+        "",
+        ...lines,
+        "",
+        "이 정보들을 저장할까?",
+        "",
+        "원하면 저장 전에 수정하거나 새 정보를 추가해도 돼.",
+      ].join("\n"),
+    );
+  } catch (error) {
+    console.error(
+      "[L-AI Learning] File learning analysis failed:",
+      error,
+    );
+
+    return chatError(
+      "첨부파일에서 장기기억 후보를 분석하지 못했어.",
+      500,
+    );
+  }
+}
+
+if (
+  uploadedFile &&
+  uploadedFile.type.startsWith("image/")
+) {
+  try {
+    const arrayBuffer =
+      await uploadedFile.arrayBuffer();
+
+    const imageBase64 =
+      Buffer.from(
+        arrayBuffer,
+      ).toString("base64");
+
+    const learningFacts =
+      await getLearningFacts(
+        sessionId,
+      );
+
+    const userMemory =
+      learningFacts.length > 0
+        ? learningFacts
+            .map(
+              (fact) =>
+                `- [${fact.category}/${fact.key}] ${fact.value}`,
+            )
+            .join("\n")
+        : null;
+
+    const reply =
+      await generateAssistantReplyWithImage(
+        rawMessage,
+        imageBase64,
+        uploadedFile.type,
+        userMemory,
+      );
+
+    return chatReply(reply);
+  } catch (error) {
+    console.error(
+      "[L-AI Attachment] Image analysis failed:",
+      error,
+    );
+
+    return chatError(
+      "이미지 내용을 분석하지 못했어.",
+      500,
+    );
+  }
+}
+
+if (
+  uploadedFile &&
+  (
+    uploadedFile.type === "application/pdf" ||
+    uploadedFile.name.toLowerCase().endsWith(".pdf")
+  )
+) {
+  try {
+    const arrayBuffer =
+      await uploadedFile.arrayBuffer();
+
+    const fileBase64 =
+      Buffer.from(
+        arrayBuffer,
+      ).toString("base64");
+
+    const learningFacts =
+      await getLearningFacts(
+        sessionId,
+      );
+
+    const userMemory =
+      learningFacts.length > 0
+        ? learningFacts
+            .map(
+              (fact) =>
+                `- [${fact.category}/${fact.key}] ${fact.value}`,
+            )
+            .join("\n")
+        : null;
+
+    const reply =
+      await generateAssistantReplyWithFile(
+        rawMessage,
+        fileBase64,
+        uploadedFile.name,
+        userMemory,
+      );
+
+    return chatReply(reply);
+  } catch (error) {
+    console.error(
+      "[L-AI Attachment] PDF analysis failed:",
+      error,
+    );
+
+    return chatError(
+      "PDF 파일 내용을 분석하지 못했어.",
+      500,
+    );
+  }
+}
+
+if (
+  uploadedFile &&
+  (
+    uploadedFile.type ===
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    uploadedFile.name.toLowerCase().endsWith(".docx")
+  )
+) {
+  try {
+    const arrayBuffer =
+      await uploadedFile.arrayBuffer();
+
+    const fileBase64 =
+      Buffer.from(
+        arrayBuffer,
+      ).toString("base64");
+
+    const learningFacts =
+      await getLearningFacts(
+        sessionId,
+      );
+
+    const userMemory =
+      learningFacts.length > 0
+        ? learningFacts
+            .map(
+              (fact) =>
+                `- [${fact.category}/${fact.key}] ${fact.value}`,
+            )
+            .join("\n")
+        : null;
+
+    const reply =
+      await generateAssistantReplyWithFile(
+        rawMessage,
+        fileBase64,
+        uploadedFile.name,
+        userMemory,
+      );
+
+    return chatReply(reply);
+  } catch (error) {
+    console.error(
+      "[L-AI Attachment] DOCX analysis failed:",
+      error,
+    );
+
+    return chatError(
+      "DOCX 파일 내용을 분석하지 못했어.",
+      500,
+    );
+  }
+}
+
+if (
+  uploadedFile &&
+  (
+    uploadedFile.type ===
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+    uploadedFile.name.toLowerCase().endsWith(".pptx")
+  )
+) {
+  try {
+    const arrayBuffer =
+      await uploadedFile.arrayBuffer();
+
+    const fileBase64 =
+      Buffer.from(
+        arrayBuffer,
+      ).toString("base64");
+
+    const learningFacts =
+      await getLearningFacts(
+        sessionId,
+      );
+
+    const userMemory =
+      learningFacts.length > 0
+        ? learningFacts
+            .map(
+              (fact) =>
+                `- [${fact.category}/${fact.key}] ${fact.value}`,
+            )
+            .join("\n")
+        : null;
+
+    const reply =
+      await generateAssistantReplyWithFile(
+        rawMessage,
+        fileBase64,
+        uploadedFile.name,
+        userMemory,
+      );
+
+    return chatReply(reply);
+  } catch (error) {
+    console.error(
+      "[L-AI Attachment] PPTX analysis failed:",
+      error,
+    );
+
+    return chatError(
+      "PPTX 파일 내용을 분석하지 못했어.",
+      500,
+    );
+  }
+}
+
+if (
+  uploadedFile &&
+  (
+    uploadedFile.type ===
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    uploadedFile.name.toLowerCase().endsWith(".xlsx")
+  )
+) {
+  try {
+    const arrayBuffer =
+      await uploadedFile.arrayBuffer();
+
+    const fileBase64 =
+      Buffer.from(
+        arrayBuffer,
+      ).toString("base64");
+
+    const learningFacts =
+      await getLearningFacts(
+        sessionId,
+      );
+
+    const userMemory =
+      learningFacts.length > 0
+        ? learningFacts
+            .map(
+              (fact) =>
+                `- [${fact.category}/${fact.key}] ${fact.value}`,
+            )
+            .join("\n")
+        : null;
+
+    const reply =
+      await generateAssistantReplyWithFile(
+        rawMessage,
+        fileBase64,
+        uploadedFile.name,
+        userMemory,
+      );
+
+    return chatReply(reply);
+  } catch (error) {
+    console.error(
+      "[L-AI Attachment] XLSX analysis failed:",
+      error,
+    );
+
+    return chatError(
+      "XLSX 파일 내용을 분석하지 못했어.",
+      500,
+    );
+  }
+}
+
+if (
+  uploadedFile &&
+  (
+    uploadedFile.type === "text/plain" ||
+    uploadedFile.name.toLowerCase().endsWith(".txt") ||
+    uploadedFile.name.toLowerCase().endsWith(".md")
+  )
+) {
+
+  try {
+    const fileText =
+      await uploadedFile.text();
+
+    const trimmedFileText =
+      fileText.slice(0, 30_000);
+
+    const learningFacts =
+      await getLearningFacts(
+        sessionId,
+      );
+
+    const userMemory =
+      learningFacts.length > 0
+        ? learningFacts
+            .map(
+              (fact) =>
+                `- [${fact.category}/${fact.key}] ${fact.value}`,
+            )
+            .join("\n")
+        : null;
+
+    const reply =
+      await generateAssistantReply(
+        [
+          rawMessage,
+          "",
+          `첨부 파일명: ${uploadedFile.name}`,
+          "",
+          "--- 첨부 파일 내용 시작 ---",
+          trimmedFileText,
+          "--- 첨부 파일 내용 끝 ---",
+        ].join("\n"),
+        userMemory,
+      );
+
+    return chatReply(reply);
+  } catch (error) {
+    console.error(
+      "[L-AI Attachment] Text file analysis failed:",
+      error,
+    );
+
+    return chatError(
+      "텍스트 파일 내용을 읽지 못했어.",
+      500,
+    );
+  }
+}
+
 let message = rawMessage;
+
+const normalizedSelfCheckMessage =
+  rawMessage
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?。！？]+$/u, "");
+
+const isSelfCheckRequest =
+  /(?:자가진단|자가\s*진단|전체\s*기능\s*점검|기능\s*점검|상태\s*점검|(?:오류|문제)(?:가)?\s*(?:있는지|있는\s*(?:거|것)|있(?:어|나|나요))|전체\s*테스트|기능\s*테스트)/u.test(
+    normalizedSelfCheckMessage,
+  );
+
+if (isSelfCheckRequest) {
+  const report =
+    await runSelfCheck(
+      sessionId,
+    );
+
+  return chatReply(
+    formatSelfCheckReport(
+      report,
+    ),
+  );
+}
+
+const isLearningProfileListRequest =
+  /(?:나에\s*대해\s*(?:뭐|무엇).*(?:기억|알고)|내\s*(?:정보|기억).*(?:보여|알려)|(?:기억한|저장한|학습한)\s*(?:내\s*)?(?:정보|내용).*(?:전체|전부)?.*(?:보여|알려)|내가\s*알려준\s*(?:정보|내용).*(?:보여|알려))/u.test(
+    rawMessage,
+  );
+
+if (isLearningProfileListRequest) {
+  const facts =
+    await getLearningFacts(
+      sessionId,
+    );
+
+  if (facts.length === 0) {
+    return chatReply(
+      "아직 장기기억에 저장된 사용자 정보가 없어.",
+    );
+  }
+
+  const categoryNames: Record<
+    string,
+    string
+  > = {
+    identity: "기본 정보",
+    preference: "선호",
+    habit: "습관",
+    communication: "대화·설명 방식",
+    school: "학교",
+    work: "업무",
+    project: "프로젝트",
+    relationship: "인물·관계",
+    goal: "목표",
+    other: "기타",
+  };
+
+  const grouped =
+    new Map<
+      string,
+      typeof facts
+    >();
+
+  for (const fact of facts) {
+    const existing =
+      grouped.get(
+        fact.category,
+      ) ?? [];
+
+    existing.push(fact);
+
+    grouped.set(
+      fact.category,
+      existing,
+    );
+  }
+
+  const sections =
+    Array.from(
+      grouped.entries(),
+    ).map(
+      ([category, items]) => {
+        const title =
+          categoryNames[
+            category
+          ] ?? category;
+
+        const lines =
+          items.map(
+            (fact) =>
+              `- ${fact.value}`,
+          );
+
+        return [
+          `### ${title}`,
+          ...lines,
+        ].join("\n");
+      },
+    );
+
+  return chatReply(
+    [
+      "## 내가 기억하고 있는 사용자 정보",
+      "",
+      ...sections,
+      "",
+      `총 ${facts.length}개의 정보를 기억하고 있어.`,
+    ].join("\n\n"),
+  );
+}    
+
+const normalizedLearningCommand =
+  rawMessage
+    .trim()
+    .toLowerCase()
+    .replace(/[.!?。！？]+$/u, "");
+
+const isLearningModeStart =
+  /^(?:엘리[,\s]*)?(?:(?:지금부터|이제)\s*)?(?:(?:사용자\s*정보|내\s*정보)(?:를|을)?\s*)?(?:(?:등록|학습|입력)(?:을|를)?\s*)?(?:시작|시작할게|시작해|시작해줘|할게|해보자)$/u.test(
+    normalizedLearningCommand,
+  );
+
+const isLearningModeEnd =
+  /^(?:엘리[,\s]*)?(?:(?:이제|오늘은|일단)\s*)?(?:(?:사용자\s*정보|내\s*정보)(?:를|을)?\s*)?(?:(?:등록|학습|입력)(?:을|를)?\s*)?(?:끝|종료|끝낼게|종료할게|끝내|끝내줘|종료해|종료해줘|여기까지|그만할게|멈춰|멈출게|멈춰줘|멈추자)$/u.test(
+    normalizedLearningCommand,
+  );
+
+if (isLearningModeStart) {
+  const status =
+    await setLearningMode(
+      sessionId,
+      true,
+    );
+
+  if (status === "failed") {
+    return chatError(
+      "사용자 정보 등록 모드를 시작하지 못했어.",
+      500,
+    );
+  }
+
+  return chatReply(
+    "사용자 정보 등록 모드를 시작했어. 이제 형식 신경 쓰지 말고 나한테 기억시키고 싶은 내용을 편하게 말해줘.",
+  );
+}
+
+if (isLearningModeEnd) {
+  const status =
+    await setLearningMode(
+      sessionId,
+      false,
+    );
+
+  if (status === "failed") {
+    return chatError(
+      "사용자 정보 등록 모드를 종료하지 못했어.",
+      500,
+    );
+  }
+
+  return chatReply(
+    "사용자 정보 등록 모드를 종료했어. 지금까지 알려준 정보는 앞으로 대화할 때 참고할게.",
+  );
+}
+
+const looksLikeLearningRollbackRequest =
+  /(?:다시\s*원래대로|원래대로\s*(?:해줘|돌려줘|바꿔줘)?|이전(?:으로|값으로)\s*(?:돌려줘|바꿔줘)?|방금\s*(?:수정한|바꾼)\s*(?:거|것)\s*(?:되돌려줘|돌려줘)|아까\s*(?:수정하기\s*전|바꾸기\s*전)(?:으로)?\s*(?:돌려줘|해줘)?)/u.test(
+    rawMessage,
+  );
+
+if (looksLikeLearningRollbackRequest) {
+  const result =
+    await undoLatestLearningChange(
+      sessionId,
+    );
+
+  if (result.status === "failed") {
+    return chatError(
+      "이전 사용자 정보로 되돌리지 못했어.",
+      500,
+    );
+  }
+
+  if (!result.undone) {
+    return chatReply(
+      "되돌릴 사용자 정보 변경 기록이 없어.",
+    );
+  }
+
+  if (result.undone.previousValue === null) {
+    return chatReply(
+      `알겠어. 최근에 추가했던 **${result.undone.nextValue ?? "사용자 정보"}**를 취소했어.`,
+    );
+  }
+
+  return chatReply(
+    `알겠어. **${result.undone.nextValue ?? "최근 값"}**에서 **${result.undone.previousValue}**로 되돌렸어.`,
+  );
+}
+
+const semanticLearningFacts =
+  await getLearningFacts(
+    sessionId,
+  );
+
+const semanticMemoryResult =
+  await interpretMemoryRequest(
+    rawMessage,
+    semanticLearningFacts,
+  );
+
+const looksLikeCalendarOperationMessage =
+  /(?:일정|캘린더|calendar)/iu.test(
+    rawMessage,
+  ) &&
+  /(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소|조회|보여|확인)/u.test(
+    rawMessage,
+  );
+
+const looksLikeSemanticRecall =
+  !looksLikeCalendarOperationMessage &&
+  semanticMemoryResult.intent === "recall" &&
+  semanticMemoryResult.confidence >= 0.8;
+
+const looksLikeSemanticUpdate =
+  !looksLikeCalendarOperationMessage &&
+  semanticMemoryResult.intent === "update" &&
+  semanticMemoryResult.confidence >= 0.8;
+
+const looksLikeSemanticAdd =
+  !looksLikeCalendarOperationMessage &&
+  semanticMemoryResult.intent === "add" &&
+  semanticMemoryResult.confidence >= 0.8;
+
+const looksLikeSemanticDelete =
+  !looksLikeCalendarOperationMessage &&
+  semanticMemoryResult.intent === "delete" &&
+  semanticMemoryResult.confidence >= 0.8;
+
+const looksLikeLearningDeleteRequest =
+  !looksLikeCalendarOperationMessage &&
+  /(?:기억하지\s*마|기억하지마|삭제해|삭제해줘|지워|지워줘|잊어|잊어줘)/u.test(
+    rawMessage,
+  );
+
+if (
+  looksLikeLearningDeleteRequest ||
+  looksLikeSemanticDelete
+) {
+  const deleteTarget =
+    await extractLearningDeleteTarget(
+      rawMessage,
+    );
+
+  if (deleteTarget.kind === "recent") {
+    const result =
+      await deleteMostRecentLearningFact(
+        sessionId,
+      );
+
+    if (result.status === "failed") {
+      return chatError(
+        "최근 사용자 정보를 삭제하지 못했어.",
+        500,
+      );
+    }
+
+    if (!result.deleted) {
+      return chatReply(
+        "삭제할 최근 사용자 정보가 없어.",
+      );
+    }
+
+    console.log(
+      "[L-AI Learning] Deleted recent fact:",
+      {
+        sessionId,
+        deleted:
+          result.deleted,
+      },
+    );
+
+    return chatReply(
+      `방금 기억한 정보 중 **${result.deleted.value}** 관련 내용을 삭제했어.`,
+    );
+  }
+
+  if (deleteTarget.kind === "specific") {
+    const result =
+      await deleteLearningFact(
+        sessionId,
+        deleteTarget.category,
+        deleteTarget.key,
+      );
+
+    if (result.status === "failed") {
+      return chatError(
+        "사용자 정보를 삭제하지 못했어.",
+        500,
+      );
+    }
+
+    if (!result.deleted) {
+      return chatReply(
+        "그 정보는 현재 장기기억에서 찾지 못했어.",
+      );
+    }
+
+    console.log(
+      "[L-AI Learning] Deleted specific fact:",
+      {
+        sessionId,
+        category:
+          deleteTarget.category,
+        key:
+          deleteTarget.key,
+      },
+    );
+
+    return chatReply(
+      "해당 사용자 정보를 장기기억에서 삭제했어.",
+    );
+  }
+
+  return chatReply(
+    "어떤 정보를 지우면 되는지 조금만 더 구체적으로 말해줘.",
+  );
+}
+
+const APPROVE_SHORT_REPLIES = new Set([
+  "ㅇㅇ",
+  "얍",
+  "엉",
+  "그려",
+  "ㄱㄱ",
+  "ㄱ",
+  "진행해",
+  "좋다",
+  "낫벧",
+  "진행시켜",
+  "ㅇ",
+  "웅",
+  "응",
+  "ㄹㅊㄱ",
+  "그래",
+  "좋아",
+  "네",
+  "넵",
+  "예",
+  "ok",
+  "okay",
+]);
+
+const pendingLearningConflict =
+  await getPendingLearningConflict(
+    sessionId,
+  );
+
+if (pendingLearningConflict) {
+  const normalizedReply =
+    rawMessage.trim().toLowerCase();
+
+  const approve =
+  APPROVE_SHORT_REPLIES.has(
+    normalizedReply,
+  ) ||
+  /^(?:일단\s*)?(?:(?:그거|그것|그것들|이거|이것|이것들|전부|모두)\s*)?(?:그대로\s*)?(?:저장|저장해|저장해줘|기억|기억해|기억해줘)$/u.test(
+    normalizedReply,
+  );
+
+  const reject =
+    /^(?:아니|아니요|ㄴㄴ|취소|그만|됐어|안\s*할래)$/u.test(
+      normalizedReply,
+    );
+
+  if (approve) {
+    const nextFacts =
+      pendingLearningConflict.conflicts.map(
+        (conflict) =>
+          conflict.next,
+      );
+
+    const result =
+      await upsertLearningFacts(
+        sessionId,
+        nextFacts,
+      );
+
+    await clearPendingLearningConflict(
+      sessionId,
+    );
+
+    if (result.status === "failed") {
+      return chatError(
+        "사용자 정보를 수정하지 못했어.",
+        500,
+      );
+    }
+
+    if (
+      pendingLearningConflict.conflicts.length ===
+      1
+    ) {
+      const conflict =
+        pendingLearningConflict.conflicts[0];
+
+      return chatReply(
+        `알겠어. **${conflict.previous.value}**에서 **${conflict.next.value}**로 수정해서 기억했어.`,
+      );
+    }
+
+    return chatReply(
+      `알겠어. ${pendingLearningConflict.conflicts.length}개의 사용자 정보를 수정해서 기억했어.`,
+    );
+  }
+
+  if (reject) {
+    await clearPendingLearningConflict(
+      sessionId,
+    );
+
+    return chatReply(
+      "알겠어. 기존 사용자 정보는 그대로 유지할게.",
+    );
+  }
+}
+
+const pendingLearningCandidates =
+  await getPendingLearningCandidates(
+    sessionId,
+  );
+
+if (pendingLearningCandidates) {
+  const normalizedReply =
+    rawMessage.trim().toLowerCase();
+
+  const approve =
+  APPROVE_SHORT_REPLIES.has(
+    normalizedReply,
+  ) ||
+  /^(?:일단\s*)?(?:(?:그거|그것|그것들|이거|이것|이것들|전부|모두)\s*)?(?:그대로\s*)?(?:저장|저장해|저장해줘|기억|기억해|기억해줘)$/u.test(
+    normalizedReply,
+  );
+
+  const reject =
+    /^(?:아니|아니요|ㄴㄴ|취소|그만|됐어|안\s*할래)$/u.test(
+      normalizedReply,
+    );
+
+  if (approve) {
+    const facts =
+      pendingLearningCandidates.facts.map(
+        (fact) => ({
+          category: fact.category,
+          key: fact.key,
+          value: fact.value,
+        }),
+      );
+
+    const result =
+      await upsertLearningFacts(
+        sessionId,
+        facts,
+      );
+
+    await clearPendingLearningCandidates(
+      sessionId,
+    );
+
+    if (result.status === "failed") {
+      return chatError(
+        "장기기억 후보를 저장하지 못했어.",
+        500,
+      );
+    }
+
+    return chatReply(
+      `알겠어. ${facts.length}개의 정보를 장기기억에 저장했어.`,
+    );
+  }
+
+  if (reject) {
+    await clearPendingLearningCandidates(
+      sessionId,
+    );
+
+    return chatReply(
+      "알겠어. 이번 장기기억 후보는 저장하지 않을게.",
+    );
+  }
+
+  const edits =
+    await extractLearningCandidateEdits(
+      rawMessage,
+      pendingLearningCandidates.facts,
+    );
+
+  if (edits.length > 0) {
+    const updatedFacts =
+      pendingLearningCandidates.facts.map(
+        (fact) => ({
+          ...fact,
+        }),
+      );
+
+    for (const edit of edits) {
+      const index =
+        updatedFacts.findIndex(
+          (fact) =>
+            fact.category === edit.category &&
+            fact.key === edit.key,
+        );
+
+      if (edit.action === "remove") {
+        if (index >= 0) {
+          updatedFacts.splice(index, 1);
+        }
+
+        continue;
+      }
+
+      if (!edit.value) {
+        continue;
+      }
+
+      if (index >= 0) {
+        updatedFacts[index] = {
+          ...updatedFacts[index],
+          value: edit.value,
+          updatedAt: Date.now(),
+        };
+      } else {
+        updatedFacts.push({
+          category: edit.category,
+          key: edit.key,
+          value: edit.value,
+          updatedAt: Date.now(),
+        });
+      }
+    }
+
+    await setPendingLearningCandidates(
+      sessionId,
+      updatedFacts,
+    );
+
+    const lines =
+      updatedFacts.map(
+        (fact) =>
+          `- **${fact.value}**`,
+      );
+
+    return chatReply(
+      [
+        "수정했어.",
+        "",
+        ...lines,
+        "",
+        "이 내용으로 저장할까?",
+      ].join("\n"),
+    );
+  }
+}
+
+if (looksLikeSemanticAdd) {
+  const facts =
+    await extractProfileFacts(
+      rawMessage,
+    );
+
+  if (facts.length === 0) {
+    return chatReply(
+      "기억할 사용자 정보를 정확히 찾지 못했어. 조금만 더 구체적으로 말해줘.",
+    );
+  }
+
+  const conflicts = [];
+
+  for (const fact of facts) {
+    const existingFact =
+      await getLearningFact(
+        sessionId,
+        fact.category,
+        fact.key,
+      );
+
+    if (
+      existingFact &&
+      existingFact.value !== fact.value
+    ) {
+      conflicts.push({
+        previous: existingFact,
+        next: fact,
+      });
+    }
+  }
+
+  if (conflicts.length > 0) {
+    const status =
+      await setPendingLearningConflict(
+        sessionId,
+        conflicts,
+      );
+
+    if (status === "failed") {
+      return chatError(
+        "사용자 정보 확인 상태를 저장하지 못했어.",
+        500,
+      );
+    }
+
+    const lines =
+      conflicts.map(
+        (conflict) =>
+          `- **${conflict.previous.value}** → **${conflict.next.value}**`,
+      );
+
+    return chatReply(
+      [
+        "기존 기억과 다른 정보가 있어.",
+        "",
+        ...lines,
+        "",
+        "이렇게 수정해서 기억할까?",
+      ].join("\n"),
+    );
+  }
+
+  const result =
+    await upsertLearningFacts(
+      sessionId,
+      facts,
+    );
+
+  if (result.status === "failed") {
+    return chatError(
+      "사용자 정보를 기억하지 못했어.",
+      500,
+    );
+  }
+
+  return chatReply(
+    facts.length === 1
+      ? `알겠어. **${facts[0].value}** 정보도 기억해둘게.`
+      : `알겠어. ${facts.length}개의 사용자 정보를 추가로 기억했어.`,
+  );
+}
+
+const looksLikeLearningUpdateRequest =
+  !(
+    /(?:일정|캘린더|calendar)/iu.test(
+      rawMessage,
+    ) &&
+    /(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소|조회|보여|확인)/u.test(
+      rawMessage,
+    )
+  ) &&
+  /(?:바꿔|바꿔줘|변경|변경해|변경해줘|수정|수정해|수정해줘|정정|정정해|정정해줘|아니고|아니야)/u.test(
+    rawMessage,
+  );
+
+if (
+  looksLikeLearningUpdateRequest ||
+  looksLikeSemanticUpdate
+) {
+  const facts =
+    await extractProfileFacts(
+      rawMessage,
+    );
+
+  if (facts.length === 0) {
+    return chatReply(
+      "어떤 사용자 정보를 어떻게 바꾸면 되는지 조금만 더 구체적으로 말해줘.",
+    );
+  }
+
+  const conflicts = [];
+
+for (const fact of facts) {
+  const existingFact =
+    await getLearningFact(
+      sessionId,
+      fact.category,
+      fact.key,
+    );
+
+  if (
+    existingFact &&
+    existingFact.value !== fact.value
+  ) {
+    conflicts.push({
+      previous: existingFact,
+      next: fact,
+    });
+  }
+}
+
+if (conflicts.length > 0) {
+  const status =
+    await setPendingLearningConflict(
+      sessionId,
+      conflicts,
+    );
+
+  if (status === "failed") {
+    return chatError(
+      "사용자 정보 수정 확인 상태를 저장하지 못했어.",
+      500,
+    );
+  }
+
+  if (conflicts.length === 1) {
+    const conflict =
+      conflicts[0];
+
+    return chatReply(
+      `기존에는 **${conflict.previous.value}**로 기억하고 있어. **${conflict.next.value}**로 수정할까?`,
+    );
+  }
+
+  const conflictLines =
+    conflicts.map(
+      (conflict) =>
+        `- **${conflict.previous.value}** → **${conflict.next.value}**`,
+    );
+
+  return chatReply(
+    [
+      `${conflicts.length}개의 정보가 기존 기억과 달라.`,
+      "",
+      ...conflictLines,
+      "",
+      "전부 수정할까?",
+    ].join("\n"),
+  );
+}
+
+  const result =
+    await upsertLearningFacts(
+      sessionId,
+      facts,
+    );
+
+  if (result.status === "failed") {
+    return chatError(
+      "사용자 정보를 수정하지 못했어.",
+      500,
+    );
+  }
+
+  console.log(
+    "[L-AI Learning] Updated profile facts:",
+    {
+      sessionId,
+      facts,
+    },
+  );
+
+  return chatReply(
+    facts.length === 1
+      ? "알겠어. 해당 사용자 정보를 수정해서 기억했어."
+      : `알겠어. ${facts.length}개의 사용자 정보를 수정해서 기억했어.`,
+  );
+}
+
+const learningMode =
+  await getLearningMode(sessionId);
+
+if (learningMode.enabled) {
+  const originalResult =
+    await appendLearningProfileEntry(
+      sessionId,
+      rawMessage,
+    );
+
+  if (originalResult.status === "failed") {
+    return chatError(
+      "사용자 정보를 저장하지 못했어.",
+      500,
+    );
+  }
+
+  const facts =
+    await extractProfileFacts(
+      rawMessage,
+    );
+
+  if (facts.length > 0) {
+    const structuredResult =
+      await upsertLearningFacts(
+        sessionId,
+        facts,
+      );
+
+    if (
+      structuredResult.status ===
+      "failed"
+    ) {
+      return chatError(
+        "사용자 정보를 분석했지만 장기기억 저장에 실패했어.",
+        500,
+      );
+    }
+
+    console.log(
+      "[L-AI Learning] Stored profile facts:",
+      {
+        sessionId,
+        facts,
+      },
+    );
+
+    return chatReply(
+      `기억해둘게. 이번 내용에서 ${facts.length}개의 장기정보를 정리해서 저장했어. 계속 편하게 알려줘.`,
+    );
+  }
+
+  return chatReply(
+    "내용은 기록했어. 다만 이번 말에서는 장기적으로 저장할 사용자 정보는 따로 찾지 못했어. 계속 편하게 알려줘.",
+  );
+}
+
+const looksLikeProfileRecallRequest =
+  /(?:내\s*(?:이름|생일|나이|학교|직업|취향|관심사|목표)|내가\s*(?:좋아하는|싫어하는)|나에\s*대해|나(?:는)?\s*(?:어디|어느|무슨)\s*학교|나\s*학교\s*어디|내가\s*(?:어디|어느|무슨)\s*학교)/u.test(
+    rawMessage,
+  );
+
+if (
+  looksLikeProfileRecallRequest ||
+  looksLikeSemanticRecall
+) {
+  const learningFacts =
+    await getLearningFacts(
+      sessionId,
+    );
+
+  if (learningFacts.length === 0) {
+    return chatReply(
+      "아직 그 질문에 답할 수 있는 사용자 정보를 기억하고 있지 않아.",
+    );
+  }
+
+  const userMemory =
+    learningFacts
+      .map(
+        (fact) =>
+          `- [${fact.category}/${fact.key}] ${fact.value}`,
+      )
+      .join("\n");
+
+  console.log(
+    "[L-AI Learning] Profile recall:",
+    {
+      sessionId,
+      facts:
+        learningFacts.map(
+          (fact) => ({
+            category:
+              fact.category,
+            key:
+              fact.key,
+            value:
+              fact.value,
+          }),
+        ),
+    },
+  );
+
+  const reply =
+  await generateAssistantReply(
+    rawMessage,
+    userMemory,
+  );
+
+await saveLastAction(
+  sessionId,
+  {
+    type: "memory_recall",
+    label: "사용자 정보 조회",
+    data: {
+      query: rawMessage,
+    },
+  },
+);
+
+return chatReply(reply);
+}
 
 const brainTraceRecallResponse =
   await handleBrainTraceRecall(
@@ -2553,6 +4220,7 @@ const routerResult =
   await handleAiRouter(
     sessionId,
     message,
+    existingBrainTrace,
   );
 
 if (routerResult.response) {
@@ -2623,6 +4291,103 @@ const routedCalendarResponse =
 if (routedCalendarResponse) {
   return routedCalendarResponse;
 }
+
+/*
+ * AI Router - L-JMAIL 검색
+ */
+if (
+  routedMessage?.intent === "mail_search"
+) {
+  try {
+    const query =
+      routedMessage.target.searchQuery?.trim() ||
+      message.trim();
+
+    const emails = await searchLJmail(
+  query,
+  {
+    limit: 10,
+  },
+);
+
+await saveLastAction(
+  sessionId,
+  {
+    type: "mail_search",
+    label: `${query} 메일 검색`,
+    data: {
+      query,
+      resultCount: emails.length,
+    },
+  },
+);
+
+if (emails.length === 0) {
+
+      return chatReply(
+        query
+          ? `'${query}'와 관련된 메일을 찾지 못했어.`
+          : "조건에 맞는 메일을 찾지 못했어.",
+      );
+    }
+
+    const lines = emails.map(
+      (email, index) => {
+        const sender =
+          email.from_name ||
+          email.from_email ||
+          "알 수 없는 발신자";
+
+        const subject =
+          email.subject ||
+          "(제목 없음)";
+
+        const preview =
+          email.preview ||
+          email.body_text ||
+          "";
+
+        const date =
+          email.received_at ||
+          email.sent_at ||
+          email.created_at ||
+          "";
+
+        return [
+          `${index + 1}. **${subject}**`,
+          `   보낸 사람: ${sender}`,
+          date
+            ? `   날짜: ${date}`
+            : null,
+          preview
+            ? `   미리보기: ${preview.slice(0, 160)}`
+            : null,
+        ]
+          .filter(Boolean)
+          .join("\n");
+      },
+    );
+
+    return chatReply(
+      [
+        `**'${query}' 관련 메일 ${emails.length}개를 찾았어.**`,
+        "",
+        ...lines,
+      ].join("\n\n"),
+    );
+  } catch (error) {
+    console.error(
+      "[L-JMAIL] Mail search failed:",
+      error,
+    );
+
+    return chatError(
+      "L-JMAIL 메일 검색에 실패했어.",
+      502,
+    );
+  }
+}
+
   /*
  * AI Router - Drive 직접 실행
  */
@@ -2976,21 +4741,100 @@ if (driveIntent) {
     );
   }
 
-  if (driveIntent.action === "search") {
+    if (driveIntent.action === "search") {
     return driveIntent.query
       ? handleDriveSearch(
-  sessionId,
-  driveIntent.query,
-)
-      : chatReply("Google Drive에서 어떤 파일을 찾을까?");
+          sessionId,
+          driveIntent.query,
+        )
+      : chatReply(
+          "Google Drive에서 어떤 파일을 찾을까?",
+        );
   }
 }
+
+/*
+ * ============================================================
+ * GENERAL AI RESPONSE
+ *
+ * Calendar / Drive / Mail 등 특정 Domain에서 처리되지 않은
+ * 일반 대화는 여기에서 처리한다.
+ *
+ * 사용자가 직접 가르쳐준 장기기억도 함께 전달한다.
+ * ============================================================
+ */
+
+try {
+  const learningFacts =
+    await getLearningFacts(
+      sessionId,
+    );
+
+  const userMemory =
+    learningFacts.length > 0
+      ? learningFacts
+          .map(
+            (fact) =>
+              `- [${fact.category}/${fact.key}] ${fact.value}`,
+          )
+          .join("\n")
+      : null;
+
+  console.log(
+  "[L-AI Learning] Injecting profile memory:",
+  {
+    sessionId,
+    factCount:
+      learningFacts.length,
+    facts:
+      learningFacts.map(
+        (fact) => ({
+          category: fact.category,
+          key: fact.key,
+          value: fact.value,
+        }),
+      ),
+  },
+);
+
+  const reply =
+    await generateAssistantReply(
+      message,
+      userMemory,
+    );
+
+  return chatReply(reply);
+} catch (error) {
+  console.error(
+    "[L-AI] General AI response failed:",
+    error,
+  );
+
+  if (
+    error instanceof
+    OpenAIConfigurationError
+  ) {
+    return chatError(
+      "OpenAI 설정을 확인해줘.",
+      500,
+    );
+  }
+
+  return chatError(
+    "답변을 생성하지 못했어.",
+    500,
+  );
 }
+}
+
 export async function POST(request: Request) {
-  const sessionId =
+    const sessionId =
     request.headers.get("x-session-id") ||
     request.headers.get("x-chat-session-id") ||
     crypto.randomUUID();
 
-  return handleChatRequest(request, sessionId);
+  return handleChatRequest(
+    request,
+    sessionId,
+  );
 }

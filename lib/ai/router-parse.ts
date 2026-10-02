@@ -16,11 +16,11 @@ const INTENTS: AiRouterIntent[] = [
   "calendar_create",
   "calendar_update",
   "calendar_delete",
+  "mail_search",
   "drive_calendar_compound",
   "follow_up",
   "clarification",
 ];
-
 function isIntent(
   value: unknown,
 ): value is AiRouterIntent {

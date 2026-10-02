@@ -1,6 +1,6 @@
 import "server-only";
 
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 import { L_AI_SYSTEM_INSTRUCTION } from "./system-instruction";
 
 const DEFAULT_MODEL = "gpt-5-mini";
@@ -26,21 +26,215 @@ export function getOpenAIModel() {
   return process.env.OPENAI_MODEL || DEFAULT_MODEL;
 }
 
-export async function generateAssistantReply(message: string) {
+export async function generateAssistantReply(
+  message: string,
+  userMemory?: string | null,
+) {
   const openai = getOpenAIClient();
-  const response = await openai.responses.create({
-    model: getOpenAIModel(),
-    instructions: L_AI_SYSTEM_INSTRUCTION,
-    input: message,
-  });
-  const reply = response.output_text.trim();
+
+  const memoryInstruction =
+    userMemory?.trim()
+      ? `
+
+다음은 사용자가 이전에 직접 알려준 장기기억 정보다.
+
+--- 사용자 장기기억 시작 ---
+${userMemory}
+--- 사용자 장기기억 끝 ---
+
+규칙:
+- 위 기억은 사용자가 직접 알려준 정보로 취급한다.
+- 현재 질문과 관련 있을 때만 자연스럽게 참고한다.
+- 관련 없는 기억을 억지로 꺼내지 않는다.
+- 기억에 없는 내용을 아는 척하거나 추측하지 않는다.
+- 사용자가 현재 대화에서 새롭게 정정한 정보가 있다면 현재 대화를 우선한다.
+`
+      : "";
+
+  const response =
+    await openai.responses.create({
+      model: getOpenAIModel(),
+
+      instructions:
+        `${L_AI_SYSTEM_INSTRUCTION}${memoryInstruction}`,
+
+      input: message,
+    });
+
+  const reply =
+    response.output_text.trim();
 
   if (!reply) {
-    throw new Error("OpenAI returned an empty response");
+    throw new Error(
+      "OpenAI returned an empty response",
+    );
   }
 
   return reply;
 }
+
+export async function generateAssistantReplyWithImage(
+  message: string,
+  imageBase64: string,
+  mimeType: string,
+  userMemory?: string | null,
+) {
+  const openai = getOpenAIClient();
+
+  const memoryInstruction =
+    userMemory?.trim()
+      ? `
+
+다음은 사용자가 이전에 직접 알려준 장기기억 정보다.
+
+--- 사용자 장기기억 시작 ---
+${userMemory}
+--- 사용자 장기기억 끝 ---
+
+규칙:
+- 위 기억은 현재 요청과 관련 있을 때만 참고한다.
+- 이미지에 실제로 보이지 않는 내용을 임의로 만들어내지 않는다.
+- 현재 사용자의 요청과 이미지 내용을 우선한다.
+`
+      : "";
+
+  const response =
+    await openai.responses.create({
+      model: getOpenAIModel(),
+
+      instructions:
+        `${L_AI_SYSTEM_INSTRUCTION}${memoryInstruction}`,
+
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text:
+                message ||
+                "이 이미지의 내용을 설명해줘.",
+            },
+            {
+              type: "input_image",
+              image_url:
+                `data:${mimeType};base64,${imageBase64}`,
+              detail: "auto",
+            },
+          ],
+        },
+      ],
+    });
+
+  const reply =
+    response.output_text.trim();
+
+  if (!reply) {
+    throw new Error(
+      "OpenAI returned an empty image response",
+    );
+  }
+
+  return reply;
+}
+
+export async function generateAssistantReplyWithFile(
+  message: string,
+  fileBase64: string,
+  fileName: string,
+  userMemory?: string | null,
+) {
+  const openai = getOpenAIClient();
+
+  const memoryInstruction =
+    userMemory?.trim()
+      ? `
+
+다음은 사용자가 이전에 직접 알려준 장기기억 정보다.
+
+--- 사용자 장기기억 시작 ---
+${userMemory}
+--- 사용자 장기기억 끝 ---
+
+규칙:
+- 위 기억은 현재 요청과 관련 있을 때만 참고한다.
+- 첨부파일 내용을 우선한다.
+- 파일에 없는 내용을 임의로 만들어내지 않는다.
+`
+      : "";
+
+  const fileBuffer =
+    Buffer.from(
+      fileBase64,
+      "base64",
+    );
+
+  const uploadFile =
+    await toFile(
+      fileBuffer,
+      fileName,
+      {
+        type: "application/pdf",
+      },
+    );
+
+  const uploaded =
+    await openai.files.create({
+      file: uploadFile,
+      purpose: "user_data",
+    });
+
+  try {
+    const response =
+      await openai.responses.create({
+        model: getOpenAIModel(),
+
+        instructions:
+          `${L_AI_SYSTEM_INSTRUCTION}${memoryInstruction}`,
+
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  message ||
+                  "이 파일의 내용을 설명해줘.",
+              },
+              {
+                type: "input_file",
+                file_id: uploaded.id,
+              },
+            ],
+          },
+        ],
+      });
+
+    const reply =
+      response.output_text.trim();
+
+    if (!reply) {
+      throw new Error(
+        "OpenAI returned an empty file response",
+      );
+    }
+
+    return reply;
+  } finally {
+    try {
+      await openai.files.delete(
+        uploaded.id,
+      );
+    } catch (error) {
+      console.error(
+        "[L-AI Attachment] Temporary OpenAI file cleanup failed:",
+        error,
+      );
+    }
+  }
+}
+
 export async function summarizeDriveFile(
   fileName: string,
   text: string,
