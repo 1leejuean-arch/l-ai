@@ -1,4 +1,9 @@
 import {
+  getMailContext,
+  saveMailContext,
+} from "@/lib/mail/context";
+
+import {
   formatSelfCheckReport,
   runSelfCheck,
 } from "@/lib/diagnostics/self-check";
@@ -2033,12 +2038,14 @@ async function handleAiRouter(
     const calendarContextForRouter =
       getCalendarContext(sessionId);
 
-    const [
+   const [
   lastActionForContext,
   learningHistoryForContext,
+  mailContextForRouter,
 ] = await Promise.all([
   getLastAction(sessionId),
   getLearningHistory(sessionId),
+  getMailContext(sessionId),
 ]);
 
     const latestLearningChange =
@@ -2088,7 +2095,12 @@ async function handleAiRouter(
           }
         : null,
 
-      mail: null,
+      mail: mailContextForRouter
+  ? {
+      recentQuery:
+        mailContextForRouter.recentQuery,
+    }
+  : null,
 
       brain: previousBrainTrace
   ? {
@@ -2208,10 +2220,8 @@ const isGenericDriveContinuationRequest =
   );
 
 const previousMailQuery =
-  lastActionForContext?.type === "mail_search" &&
-  typeof lastActionForContext.data?.query === "string"
-    ? lastActionForContext.data.query.trim()
-    : null;
+  mailContextForRouter?.recentQuery?.trim() ||
+  null;
 
 const messageForRouter =
   shouldUseContextResolution &&
@@ -4320,6 +4330,11 @@ await saveLastAction(
       resultCount: emails.length,
     },
   },
+);
+
+saveMailContext(
+  sessionId,
+  query,
 );
 
 if (emails.length === 0) {

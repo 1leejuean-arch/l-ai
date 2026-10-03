@@ -3,6 +3,7 @@ import "server-only";
 export type MemoryType =
   | "calendar"
   | "drive"
+  | "mail"
   | "action"
   | "conversation"
   | "brain"
@@ -77,8 +78,9 @@ function isStoredMemoryRow(
   return (
     typeof record.session_id === "string" &&
     (
-  record.memory_type === "calendar" ||
+ record.memory_type === "calendar" ||
 record.memory_type === "drive" ||
+record.memory_type === "mail" ||
 record.memory_type === "action" ||
 record.memory_type === "conversation" ||
 record.memory_type === "brain" ||
