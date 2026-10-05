@@ -9,6 +9,11 @@ import {
 const LAST_ACTION_TTL_MS =
   1000 * 60 * 60 * 24 * 7;
 
+  const ACTION_HISTORY_MEMORY_KEY =
+  "action_history";
+
+const ACTION_HISTORY_LIMIT = 5;
+
 const LAST_ACTION_REFERENCE_TTL_MS = {
   immediate: 1000 * 60 * 60,
   earlier: 1000 * 60 * 60 * 24,
@@ -59,6 +64,9 @@ export type LastActionMemory = {
   createdAt: number;
 };
 
+export type ActionHistoryMemory =
+  LastActionMemory[];
+
 export async function saveLastAction(
   sessionId: string,
   action: Omit<
@@ -71,6 +79,32 @@ export async function saveLastAction(
     createdAt: Date.now(),
   };
 
+const storedHistory =
+  await getMemory<ActionHistoryMemory>(
+    sessionId,
+    "action",
+    ACTION_HISTORY_MEMORY_KEY,
+    LAST_ACTION_TTL_MS,
+  );
+
+const previousHistory =
+  Array.isArray(storedHistory)
+    ? storedHistory
+    : [];
+
+const actionHistory: ActionHistoryMemory = [
+  memory,
+  ...previousHistory.filter(
+    (item) =>
+      !(
+        item.type === memory.type &&
+        item.label === memory.label &&
+        JSON.stringify(item.data ?? null) ===
+          JSON.stringify(memory.data ?? null)
+      ),
+  ),
+].slice(0, ACTION_HISTORY_LIMIT);
+
   const persistence =
     await saveMemoryAndWait(
       sessionId,
@@ -78,6 +112,13 @@ export async function saveLastAction(
       "last_action",
       memory,
     );
+
+await saveMemoryAndWait(
+  sessionId,
+  "action",
+  ACTION_HISTORY_MEMORY_KEY,
+  actionHistory,
+);
 
   const details = {
     sessionId,
@@ -185,6 +226,33 @@ export async function getLastAction(
   }
 
   return action;
+}
+
+export async function getActionHistory(
+  sessionId: string,
+): Promise<ActionHistoryMemory> {
+  const history =
+    await getMemory<ActionHistoryMemory>(
+      sessionId,
+      "action",
+      ACTION_HISTORY_MEMORY_KEY,
+      LAST_ACTION_TTL_MS,
+    );
+
+  if (!Array.isArray(history)) {
+    return [];
+  }
+
+  return history
+    .filter(
+      (item): item is LastActionMemory =>
+        typeof item === "object" &&
+        item !== null &&
+        typeof item.type === "string" &&
+        typeof item.label === "string" &&
+        typeof item.createdAt === "number",
+    )
+    .slice(0, ACTION_HISTORY_LIMIT);
 }
 
 export async function clearLastAction(

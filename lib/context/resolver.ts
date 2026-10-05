@@ -77,6 +77,27 @@ export function buildContextSummary(
     );
   }
 
+if (
+  snapshot.recentActions &&
+  snapshot.recentActions.length > 0
+) {
+  lines.push(
+    [
+      "[최근 작업 기록 - 1번이 가장 최근]",
+      ...snapshot.recentActions
+        .slice(0, 5)
+        .map(
+          (action, index) =>
+            `${index + 1}. ${
+              action.type ?? "(종류 없음)"
+            } / ${
+              action.label ?? "(설명 없음)"
+            }`,
+        ),
+    ].join("\n"),
+  );
+}
+
   if (
     snapshot.memory?.latestChange
   ) {
@@ -276,6 +297,47 @@ none
 6. reason은 왜 그렇게 판단했는지
    짧은 한국어 한 문장으로 작성한다.
 
+7. [최근 작업 기록 - 1번이 가장 최근]이 존재하면 작업 순서를 적극적으로 사용한다.
+
+- 1번은 가장 최근 작업이다.
+- "그거 말고 전에 거", "그거 말고 이전 거", "전에 한 거 다시"는
+  가장 최근 작업(1번)을 제외하고 2번 작업을 가리킨다.
+- "두 번째 거", "2번째 거"는 2번 작업을 가리킨다.
+- "세 번째 거", "3번째 거"는 3번 작업을 가리킨다.
+- "두 단계 전 작업"은 3번 작업을 가리킨다.
+- 선택된 작업의 type을 보고 domain을 결정한다.
+
+예:
+calendar_* -> calendar
+drive_* -> drive
+mail_* -> mail
+memory_* -> memory
+
+최근 작업 기록만으로 대상이 명확하면 unknown을 사용하지 않는다.
+
+이전 작업을 다시 실행하거나 다시 보여달라는 의미라면 action은 repeat로 판단한다.
+
+예:
+
+최근 작업 기록:
+1. calendar_get / 이번 주 일정 조회
+2. mail_search / 구글 메일 검색
+3. drive_search / 방송부 파일 검색
+
+사용자:
+"그거 말고 전에 거 다시 보여줘"
+
+결과:
+domain = mail
+action = repeat
+
+사용자:
+"세 번째 거 다시 보여줘"
+
+결과:
+domain = drive
+action = repeat
+
 반드시 JSON만 출력한다.
 
 형식:
@@ -403,6 +465,12 @@ export type ContextSnapshot = {
     type?: string | null;
     label?: string | null;
   } | null;
+
+recentActions?: Array<{
+  type?: string | null;
+  label?: string | null;
+  createdAt?: number | null;
+}> | null;
 
   memory?: {
     latestChange?: {

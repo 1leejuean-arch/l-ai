@@ -48,6 +48,7 @@ import {
 import { createReflection } from "@/lib/brain/reflection";
 import { createPlan } from "@/lib/brain/planner";
 import {
+  getActionHistory,
   getLastAction,
   getLastActionRecency,
   saveLastAction,
@@ -2040,10 +2041,12 @@ async function handleAiRouter(
 
    const [
   lastActionForContext,
+  actionHistoryForContext,
   learningHistoryForContext,
   mailContextForRouter,
 ] = await Promise.all([
   getLastAction(sessionId),
+  getActionHistory(sessionId),
   getLearningHistory(sessionId),
   getMailContext(sessionId),
 ]);
@@ -2058,6 +2061,17 @@ async function handleAiRouter(
             label: lastActionForContext.label,
           }
         : null,
+
+recentActions:
+  actionHistoryForContext.length > 0
+    ? actionHistoryForContext.map(
+        (action) => ({
+          type: action.type,
+          label: action.label,
+          createdAt: action.createdAt,
+        }),
+      )
+    : null,
 
       memory: {
         latestChange: latestLearningChange
@@ -2196,11 +2210,61 @@ const shouldUseContextResolution =
   ) ||
   canFallbackToLastAction;
 
-const previousDriveQuery =
-  lastActionForContext?.type === "drive_search" &&
-  typeof lastActionForContext.data?.query === "string"
-    ? lastActionForContext.data.query.trim()
+const selectedHistoryActionIndex = (() => {
+  const normalized =
+    message.replace(/\s+/gu, "");
+
+  const wordIndexes: Record<string, number> = {
+    첫번째: 0,
+    두번째: 1,
+    세번째: 2,
+    네번째: 3,
+    다섯번째: 4,
+  };
+
+  for (const [word, index] of Object.entries(
+    wordIndexes,
+  )) {
+    if (normalized.includes(word)) {
+      return index;
+    }
+  }
+
+  const numericMatch =
+    /([1-5])(?:번째|번)/u.exec(
+      normalized,
+    );
+
+  return numericMatch
+    ? Number(numericMatch[1]) - 1
     : null;
+})();
+
+const selectedHistoryAction =
+  selectedHistoryActionIndex !== null
+    ? actionHistoryForContext[
+        selectedHistoryActionIndex
+      ] ?? null
+    : null;
+
+const selectedHistoryDriveQuery =
+  selectedHistoryAction?.type ===
+    "drive_search" &&
+  typeof selectedHistoryAction.data?.query ===
+    "string"
+    ? selectedHistoryAction.data.query.trim()
+    : null;
+
+const previousDriveQuery =
+  selectedHistoryDriveQuery ||
+  (
+    lastActionForContext?.type ===
+      "drive_search" &&
+    typeof lastActionForContext.data?.query ===
+      "string"
+      ? lastActionForContext.data.query.trim()
+      : null
+  );
 
 const previousMemoryQuery =
   lastActionForContext?.type === "memory_recall" &&
@@ -3241,6 +3305,19 @@ const semanticMemoryResult =
     semanticLearningFacts,
   );
 
+const looksLikeActionHistoryReference =
+  (
+    /(?:첫|두|세|네|다섯|\d+)\s*(?:번째|번)\s*(?:거|것|작업|항목)?/u.test(
+      rawMessage,
+    ) ||
+    /(?:그거\s*말고\s*(?:전에|이전)|그\s*전\s*거|두\s*단계\s*전)/u.test(
+      rawMessage,
+    )
+  ) &&
+  /(?:다시|보여|해줘|실행|말해|찾아|열어)/u.test(
+    rawMessage,
+  );
+
 const looksLikeCalendarOperationMessage =
   /(?:일정|캘린더|calendar)/iu.test(
     rawMessage,
@@ -3251,26 +3328,31 @@ const looksLikeCalendarOperationMessage =
 
 const looksLikeSemanticRecall =
   !looksLikeCalendarOperationMessage &&
+  !looksLikeActionHistoryReference &&
   semanticMemoryResult.intent === "recall" &&
   semanticMemoryResult.confidence >= 0.8;
 
 const looksLikeSemanticUpdate =
   !looksLikeCalendarOperationMessage &&
+  !looksLikeActionHistoryReference &&
   semanticMemoryResult.intent === "update" &&
   semanticMemoryResult.confidence >= 0.8;
 
 const looksLikeSemanticAdd =
   !looksLikeCalendarOperationMessage &&
+  !looksLikeActionHistoryReference &&
   semanticMemoryResult.intent === "add" &&
   semanticMemoryResult.confidence >= 0.8;
 
 const looksLikeSemanticDelete =
   !looksLikeCalendarOperationMessage &&
+  !looksLikeActionHistoryReference &&
   semanticMemoryResult.intent === "delete" &&
   semanticMemoryResult.confidence >= 0.8;
 
 const looksLikeLearningDeleteRequest =
   !looksLikeCalendarOperationMessage &&
+  !looksLikeActionHistoryReference &&
   /(?:기억하지\s*마|기억하지마|삭제해|삭제해줘|지워|지워줘|잊어|잊어줘)/u.test(
     rawMessage,
   );
