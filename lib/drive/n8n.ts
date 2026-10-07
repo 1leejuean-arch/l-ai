@@ -87,16 +87,33 @@ export async function searchGoogleDrive(query: string) {
     query,
   });
 
-  let result: unknown;
+  const raw = await response.text();
 
-  try {
-    result = await response.json();
-  } catch {
-    console.error("[Drive] Search webhook returned invalid JSON.");
-    throw new Error("Drive search webhook returned invalid JSON");
-  }
+if (!raw.trim()) {
+  console.log(
+    "[Drive] Search webhook returned empty response.",
+    { query },
+  );
 
-  return parseDriveFiles(result);
+  return [];
+}
+
+let result: unknown;
+
+try {
+  result = JSON.parse(raw);
+} catch {
+  console.error(
+    "[Drive] Search webhook returned invalid JSON:",
+    raw.slice(0, 500),
+  );
+
+  throw new Error(
+    "Drive search webhook returned invalid JSON",
+  );
+}
+
+return parseDriveFiles(result);
 }
 
 export async function getRecentGoogleDriveFiles() {
