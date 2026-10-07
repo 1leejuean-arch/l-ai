@@ -4204,6 +4204,41 @@ if (lastActionResponse) {
 const rememberedCalendarContext =
   getCalendarContext(sessionId);
 
+const looksLikeCalendarToDriveRequest =
+  /(?:그\s*일정|해당\s*일정|이\s*일정)/u.test(
+    rawMessage,
+  ) &&
+  /(?:관련|연관)/u.test(
+    rawMessage,
+  ) &&
+  /(?:파일|문서)/u.test(
+    rawMessage,
+  ) &&
+  /(?:찾아|검색|보여)/u.test(
+    rawMessage,
+  );
+
+if (
+  looksLikeCalendarToDriveRequest &&
+  rememberedCalendarContext?.events.length === 1
+) {
+  const targetEvent =
+    rememberedCalendarContext.events[0];
+
+  console.log(
+    "[L-AI Cross Domain] Calendar -> Drive",
+    {
+      sessionId,
+      eventTitle: targetEvent.title,
+    },
+  );
+
+  return handleDriveSearch(
+    sessionId,
+    targetEvent.title,
+  );
+}
+
 const calendarDirectMemoryResponse =
   await handleCalendarDirectMemoryReference(
     sessionId,
