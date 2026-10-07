@@ -247,6 +247,192 @@ function normalizeShortReply(message: string) {
   return message.trim().toLowerCase().replace(/[.!?。！？]+$/u, "");
 }
 
+function getFastCalendarGetRange(
+  message: string,
+  now = new Date(),
+): {
+  range: CalendarRange;
+  rangeLabel: string;
+} | null {
+  const normalized =
+    message.replace(/\s+/gu, "");
+
+  const explicitDateMatch =
+  /(\d{4})년(\d{1,2})월(\d{1,2})일/u.exec(
+    normalized,
+  );
+
+if (explicitDateMatch) {
+  const year =
+    Number(explicitDateMatch[1]);
+
+  const month =
+    Number(explicitDateMatch[2]);
+
+  const day =
+    Number(explicitDateMatch[3]);
+
+  const startDate =
+    new Date(
+      Date.UTC(
+        year,
+        month - 1,
+        day,
+      ),
+    );
+
+  const isValidDate =
+    startDate.getUTCFullYear() === year &&
+    startDate.getUTCMonth() ===
+      month - 1 &&
+    startDate.getUTCDate() === day;
+
+  if (!isValidDate) {
+    return null;
+  }
+
+  const endDate =
+    new Date(startDate);
+
+  endDate.setUTCDate(
+    endDate.getUTCDate() + 1,
+  );
+
+  const formatDate = (
+    date: Date,
+  ) => {
+    const yyyy =
+      date.getUTCFullYear();
+
+    const mm =
+      String(
+        date.getUTCMonth() + 1,
+      ).padStart(2, "0");
+
+    const dd =
+      String(
+        date.getUTCDate(),
+      ).padStart(2, "0");
+
+    return `${yyyy}-${mm}-${dd}T00:00:00+09:00`;
+  };
+
+  return {
+    range: {
+      start:
+        formatDate(startDate),
+      end:
+        formatDate(endDate),
+    },
+    rangeLabel:
+      `${year}년 ${month}월 ${day}일`,
+  };
+}
+
+if (!normalized.includes("이번주")) {
+  return null;
+}
+
+  const parts =
+    new Intl.DateTimeFormat(
+      "en-CA",
+      {
+        timeZone: "Asia/Seoul",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      },
+    ).formatToParts(now);
+
+  const getPart = (type: string) =>
+    parts.find(
+      (part) => part.type === type,
+    )?.value ?? "";
+
+  const year = Number(
+    getPart("year"),
+  );
+  const month = Number(
+    getPart("month"),
+  );
+  const day = Number(
+    getPart("day"),
+  );
+
+  if (
+    !year ||
+    !month ||
+    !day
+  ) {
+    return null;
+  }
+
+  const currentDate =
+    new Date(
+      Date.UTC(
+        year,
+        month - 1,
+        day,
+      ),
+    );
+
+  const dayOfWeek =
+    currentDate.getUTCDay();
+
+  const daysFromMonday =
+    dayOfWeek === 0
+      ? 6
+      : dayOfWeek - 1;
+
+  const startDate =
+    new Date(currentDate);
+
+  startDate.setUTCDate(
+    startDate.getUTCDate() -
+      daysFromMonday,
+  );
+
+  const endDate =
+    new Date(startDate);
+
+  endDate.setUTCDate(
+    endDate.getUTCDate() + 7,
+  );
+
+  const toSeoulMidnight = (
+    date: Date,
+  ) => {
+    const yyyy =
+      date.getUTCFullYear();
+
+    const mm =
+      String(
+        date.getUTCMonth() + 1,
+      ).padStart(2, "0");
+
+    const dd =
+      String(
+        date.getUTCDate(),
+      ).padStart(2, "0");
+
+    return `${yyyy}-${mm}-${dd}T00:00:00+09:00`;
+  };
+
+  return {
+    range: {
+      start:
+        toSeoulMidnight(
+          startDate,
+        ),
+      end:
+        toSeoulMidnight(
+          endDate,
+        ),
+    },
+    rangeLabel: "이번 주",
+  };
+}
+
 function parseSelectionIndex(message: string, candidateCount: number) {
   const normalized = normalizeShortReply(message).replace(/\s/g, "");
   const wordIndexes: Record<string, number> = {
@@ -1626,6 +1812,9 @@ async function handleCalendarDirectMemoryReference(
   const calendarDeleteWordPattern =
     /(?:지워|삭제|없애)/u;
 
+const calendarRepeatWordPattern =
+  /(?:다시\s*(?:보여|조회|확인)|한\s*번\s*더\s*(?:보여|조회|확인))/u;
+
   if (
     rememberedCalendarContext?.events.length !== 1 ||
     !rememberedCalendarReferencePattern.test(rawMessage)
@@ -1642,6 +1831,38 @@ async function handleCalendarDirectMemoryReference(
 
   const targetEvent =
     rememberedCalendarContext.events[0];
+
+if (
+  calendarRepeatWordPattern.test(
+    rawMessage,
+  )
+) {
+  const rememberedRangeLabel =
+    rememberedCalendarContext.rangeLabel?.trim() ??
+    "";
+
+  const fastCalendarRange =
+    getFastCalendarGetRange(
+      rememberedRangeLabel,
+    );
+
+  if (fastCalendarRange) {
+    console.log(
+      "[L-AI Fast Path] Calendar context repeat",
+      {
+        original: rawMessage,
+        rangeLabel:
+          fastCalendarRange.rangeLabel,
+      },
+    );
+
+    return handleCalendarGet(
+      sessionId,
+      fastCalendarRange.range,
+      fastCalendarRange.rangeLabel,
+    );
+  }
+}
 
   if (
   !calendarDeleteWordPattern.test(
@@ -2033,6 +2254,9 @@ async function handleAiRouter(
     | null = null;
 
   try {
+const contextPreparationStartedAt =
+  Date.now();
+
     const driveContextForRouter =
       getDriveContext(sessionId);
 
@@ -2132,11 +2356,32 @@ const contextSummary =
   contextSummary,
 );
 
+const contextPreparationMs =
+  Date.now() -
+  contextPreparationStartedAt;
+
+console.log(
+  "[L-AI Perf] Context preparation:",
+  `${contextPreparationMs}ms`,
+);
+
+const contextResolverStartedAt =
+  Date.now();
+
 const contextResolution =
   await resolveConversationContext(
     message,
     contextSummary,
   );
+
+const contextResolverMs =
+  Date.now() -
+  contextResolverStartedAt;
+
+console.log(
+  "[L-AI Perf] Context resolver:",
+  `${contextResolverMs}ms`,
+);
 
 console.log(
   "[L-AI Context Resolver]",
@@ -2316,6 +2561,9 @@ previousDriveQuery
           ? `내 메일에서 ${previousMailQuery} 관련 메일을 찾아줘`
           : message;
 
+const aiRouterStartedAt =
+  Date.now();
+
 routedMessage = await routeUserMessage(
   messageForRouter,
   {
@@ -2343,6 +2591,15 @@ routedMessage = await routeUserMessage(
         ? contextResolution.reason
         : null,
   },
+);
+
+const aiRouterMs =
+  Date.now() -
+  aiRouterStartedAt;
+
+console.log(
+  "[L-AI Perf] AI router:",
+  `${aiRouterMs}ms`,
 );
 
     if (routedMessage) {
@@ -3294,16 +3551,47 @@ if (looksLikeLearningRollbackRequest) {
   );
 }
 
-const semanticLearningFacts =
-  await getLearningFacts(
-    sessionId,
+const looksLikeCalendarOperationMessage =
+  /(?:일정|캘린더|calendar)/iu.test(
+    rawMessage,
+  ) &&
+  /(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소|조회|보여|확인)/u.test(
+    rawMessage,
   );
 
+const semanticLearningStartedAt =
+  Date.now();
+
+const semanticLearningFacts =
+  looksLikeCalendarOperationMessage
+    ? []
+    : await getLearningFacts(
+        sessionId,
+      );
+
+console.log(
+  "[L-AI Perf] Semantic learning facts:",
+  `${Date.now() - semanticLearningStartedAt}ms`,
+);
+
+const semanticMemoryStartedAt =
+  Date.now();
+
 const semanticMemoryResult =
-  await interpretMemoryRequest(
-    rawMessage,
-    semanticLearningFacts,
-  );
+  looksLikeCalendarOperationMessage
+    ? {
+        intent: "none" as const,
+        confidence: 0,
+      }
+    : await interpretMemoryRequest(
+        rawMessage,
+        semanticLearningFacts,
+      );
+
+console.log(
+  "[L-AI Perf] Semantic memory interpreter:",
+  `${Date.now() - semanticMemoryStartedAt}ms`,
+);
 
 const looksLikeActionHistoryReference =
   (
@@ -3315,14 +3603,6 @@ const looksLikeActionHistoryReference =
     )
   ) &&
   /(?:다시|보여|해줘|실행|말해|찾아|열어)/u.test(
-    rawMessage,
-  );
-
-const looksLikeCalendarOperationMessage =
-  /(?:일정|캘린더|calendar)/iu.test(
-    rawMessage,
-  ) &&
-  /(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소|조회|보여|확인)/u.test(
     rawMessage,
   );
 
@@ -4010,6 +4290,9 @@ if (brainTraceRecallResponse) {
   return brainTraceRecallResponse;
 }
 
+const brainPreparationStartedAt =
+  Date.now();
+
 const prePlan = createPlan({
   message: rawMessage,
   intent: null,
@@ -4029,6 +4312,17 @@ console.log(
     steps: prePlan.steps,
   },
 );
+
+console.log(
+  "[L-AI Perf] Brain preparation:",
+  `${Date.now() - brainPreparationStartedAt}ms`,
+);
+
+const contextHydrationStartedAt =
+  Date.now();
+
+const brainTraceStartedAt =
+  Date.now();
 
 const existingBrainTrace =
   await getActiveBrainTrace(
@@ -4050,6 +4344,11 @@ const brainTrace =
         sessionId,
         prePlan,
       );
+
+console.log(
+  "[L-AI Perf] Brain trace:",
+  `${Date.now() - brainTraceStartedAt}ms`,
+);
 
 console.log(
   "[L-AI Brain] Trace",
@@ -4077,6 +4376,11 @@ console.log(
 
 await hydrateCalendarContext(sessionId);
 await hydrateDriveContext(sessionId);
+
+console.log(
+  "[L-AI Perf] Context hydration:",
+  `${Date.now() - contextHydrationStartedAt}ms`,
+);
 
 /*
  * 2. CROSS-CONTEXT PREPROCESSING
@@ -4321,6 +4625,110 @@ if (earlyDriveCalendarResponse) {
   return earlyDriveCalendarResponse;
 }
 
+const looksLikeFastCalendarGet =
+  /(?:일정|캘린더|calendar)/iu.test(
+    rawMessage,
+  ) &&
+  /(?:보여|조회|확인|알려)/u.test(
+    rawMessage,
+  ) &&
+  /(?:오늘|내일|모레|이번\s*주|다음\s*주|이번\s*달|다음\s*달|\d{4}년\s*\d{1,2}월\s*\d{1,2}일)/u.test(
+    rawMessage,
+  ) &&
+  !/(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소)/u.test(
+    rawMessage,
+  ) &&
+  !/(?:그거|그\s*일정|아까|전에|이전|다시|첫\s*번째|두\s*번째|세\s*번째|네\s*번째|\d+\s*번째)/u.test(
+    rawMessage,
+  );
+
+if (looksLikeFastCalendarGet) {
+  const fastPathStartedAt =
+    Date.now();
+
+  const fastCalendarRange =
+    getFastCalendarGetRange(
+      rawMessage,
+    );
+
+  if (fastCalendarRange) {
+    console.log(
+      "[L-AI Fast Path] Local calendar range",
+      {
+        original: rawMessage,
+        rangeLabel:
+          fastCalendarRange.rangeLabel,
+        range:
+          fastCalendarRange.range,
+      },
+    );
+
+    const response =
+      await handleCalendarGet(
+        sessionId,
+        fastCalendarRange.range,
+        fastCalendarRange.rangeLabel,
+      );
+
+    console.log(
+      "[L-AI Perf] Calendar fast path:",
+      `${Date.now() - fastPathStartedAt}ms`,
+    );
+
+    return response;
+  }
+
+  const calendarResult =
+    await parseCalendarRequest(
+      rawMessage,
+      new Date(),
+    );
+
+  if (calendarResult.kind === "get") {
+    console.log(
+      "[L-AI Fast Path] Calendar get",
+      {
+        original: rawMessage,
+        rangeLabel:
+          calendarResult.rangeLabel,
+      },
+    );
+
+    const response =
+      await handleCalendarGet(
+        sessionId,
+        calendarResult.range,
+        calendarResult.rangeLabel,
+      );
+
+    const reflection =
+      createReflection(
+        createPlan({
+          message: rawMessage,
+          intent: "calendar_get",
+          confidence: 1,
+        }),
+        {
+          completedToolIds: [
+            "calendar.get",
+          ],
+        },
+      );
+
+    console.log(
+      "[L-AI Brain] Reflection",
+      reflection,
+    );
+
+    console.log(
+      "[L-AI Perf] Calendar fast path:",
+      `${Date.now() - fastPathStartedAt}ms`,
+    );
+
+    return response;
+  }
+}
+
 /*
  * ============================================================
  * 8. AI ROUTER
@@ -4407,6 +4815,9 @@ console.log(
  * ============================================================
  */
 
+const calendarExecutionStartedAt =
+  Date.now();
+
 const routedCalendarResponse =
   await handleRoutedCalendarIntent(
     sessionId,
@@ -4414,6 +4825,15 @@ const routedCalendarResponse =
     message,
     routedMessage,
   );
+
+const calendarExecutionMs =
+  Date.now() -
+  calendarExecutionStartedAt;
+
+console.log(
+  "[L-AI Perf] Calendar execution:",
+  `${calendarExecutionMs}ms`,
+);
 
 if (routedCalendarResponse) {
   return routedCalendarResponse;
