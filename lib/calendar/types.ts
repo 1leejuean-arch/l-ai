@@ -147,6 +147,10 @@ export type PendingCalendarAction =
       kind: "select_delete";
       candidates: CalendarEventCandidate[];
     }
+    | {
+    kind: "select_drive_search";
+    candidates: CalendarEvent[];
+  }
   | {
       kind: "clarify_update";
       targetEvent: CalendarEventCandidate;

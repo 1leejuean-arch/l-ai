@@ -2,7 +2,7 @@ import "server-only";
 
 import type { DriveAction, GoogleDriveFile } from "./types";
 
-const DRIVE_REQUEST_TIMEOUT_MS = 15_000;
+const DRIVE_REQUEST_TIMEOUT_MS = 30_000;
 
 function getDriveUrl() {
   const webhookUrl = process.env.N8N_DRIVE_SEARCH_URL?.trim();

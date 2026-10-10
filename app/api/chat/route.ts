@@ -1101,9 +1101,14 @@ function prepareDeleteConfirmation(
 function handlePendingSelection(
   sessionId: string,
   pending: Extract<
-    PendingCalendarAction,
-    { kind: "select_update" | "select_delete" }
-  >,
+  PendingCalendarAction,
+  {
+    kind:
+      | "select_update"
+      | "select_delete"
+      | "select_drive_search";
+  }
+>,
   message: string,
 ) {
   const selectedByIndex = parseSelectionIndex(message, pending.candidates.length);
@@ -1126,7 +1131,29 @@ function handlePendingSelection(
     return null;
   }
 
-  const candidate = pending.candidates[selectedIndex];
+  if (
+  pending.kind ===
+  "select_drive_search"
+) {
+  const candidate =
+    pending.candidates[
+      selectedIndex
+    ];
+
+  clearPendingCalendarAction(
+    sessionId,
+  );
+
+  return handleDriveSearch(
+    sessionId,
+    candidate.title,
+  );
+}
+
+const candidate =
+  pending.candidates[
+    selectedIndex
+  ];
 
   if (pending.kind === "select_delete") {
     return prepareDeleteConfirmation(sessionId, candidate);
@@ -2069,11 +2096,13 @@ async function handleCalendarPending(
    * 여러 일정 중 수정 / 삭제 대상 선택
    */
   if (
-    rawPending?.kind ===
-      "select_update" ||
-    rawPending?.kind ===
-      "select_delete"
-  ) {
+  rawPending?.kind ===
+    "select_update" ||
+  rawPending?.kind ===
+    "select_delete" ||
+  rawPending?.kind ===
+    "select_drive_search"
+) {
     const selectionResponse =
       handlePendingSelection(
         sessionId,
@@ -4521,6 +4550,41 @@ const looksLikeCalendarToDriveRequest =
   /(?:찾아|검색|보여)/u.test(
     rawMessage,
   );
+
+if (
+  looksLikeCalendarToDriveRequest &&
+  rememberedCalendarContext &&
+  rememberedCalendarContext.events.length > 1
+) {
+  const candidates =
+    rememberedCalendarContext.events.map(
+      (event) => ({
+        title: event.title,
+        start: event.start,
+        end: event.end,
+      }),
+    );
+
+  setPendingCalendarAction(
+    sessionId,
+    {
+      kind: "select_drive_search",
+      candidates,
+    },
+  );
+
+  const options =
+    candidates
+      .map(
+        (event, index) =>
+          `${index + 1}. ${event.title}`,
+      )
+      .join("\n");
+
+  return chatReply(
+    `관련 파일을 찾을 일정이 여러 개 있어. 어떤 일정인지 골라줘.\n\n${options}`,
+  );
+}
 
 if (
   looksLikeCalendarToDriveRequest &&
