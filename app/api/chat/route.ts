@@ -247,6 +247,36 @@ function normalizeShortReply(message: string) {
   return message.trim().toLowerCase().replace(/[.!?。！？]+$/u, "");
 }
 
+function looksLikeShortSelectionReply(
+  message: string,
+) {
+  const normalized =
+    normalizeShortReply(message).replace(
+      /\s+/gu,
+      "",
+    );
+
+  return /^(?:\d+번?|첫번째|첫째|두번째|둘째|세번째|셋째|네번째|넷째|다섯번째|다섯째)$/u.test(
+    normalized,
+  );
+}
+
+function looksLikeShortPendingControlReply(
+  message: string,
+) {
+  const normalized =
+    normalizeShortReply(message);
+
+  return (
+    GENERIC_APPROVAL_MESSAGES.has(
+      normalized,
+    ) ||
+    /^(?:취소|취소해|취소해줘|아니|아니야|ㄴㄴ)$/u.test(
+      normalized,
+    )
+  );
+}
+
 function getFastCalendarGetRange(
   message: string,
   now = new Date(),
@@ -3588,11 +3618,20 @@ const looksLikeCalendarOperationMessage =
     rawMessage,
   );
 
+const shouldBypassSemanticMemory =
+  looksLikeCalendarOperationMessage ||
+  looksLikeShortSelectionReply(
+    rawMessage,
+  ) ||
+  looksLikeShortPendingControlReply(
+    rawMessage,
+  );
+
 const semanticLearningStartedAt =
   Date.now();
 
 const semanticLearningFacts =
-  looksLikeCalendarOperationMessage
+  shouldBypassSemanticMemory
     ? []
     : await getLearningFacts(
         sessionId,
@@ -3607,7 +3646,7 @@ const semanticMemoryStartedAt =
   Date.now();
 
 const semanticMemoryResult =
-  looksLikeCalendarOperationMessage
+  shouldBypassSemanticMemory
     ? {
         intent: "none" as const,
         confidence: 0,
@@ -4323,7 +4362,15 @@ const brainPreparationStartedAt =
   Date.now();
 
 const prePlan = createPlan({
-  message: rawMessage,
+  message:
+    looksLikeShortSelectionReply(
+      rawMessage,
+    ) ||
+    looksLikeShortPendingControlReply(
+      rawMessage,
+    )
+      ? "사용자 후속 응답"
+      : rawMessage,
   intent: null,
   confidence: null,
 });
@@ -4471,6 +4518,41 @@ if (calendarPendingResponse) {
   return calendarPendingResponse;
 }
 
+if (
+  looksLikeShortSelectionReply(
+    rawMessage,
+  )
+) {
+  const actionHistory =
+    await getActionHistory(
+      sessionId,
+    );
+
+  const selectedIndex =
+    parseSelectionIndex(
+      rawMessage,
+      actionHistory.length,
+    );
+
+  if (selectedIndex !== null) {
+    const selectedAction =
+      actionHistory[selectedIndex];
+
+    console.log(
+      "[L-AI Memory] Priority selected: action_history",
+      {
+        sessionId,
+        index: selectedIndex + 1,
+        type: selectedAction.type,
+        label: selectedAction.label,
+      },
+    );
+
+    return chatReply(
+      `최근 작업 ${selectedIndex + 1}번은 **${selectedAction.label}**이야.`,
+    );
+  }
+}
 
 /*
  * ============================================================
