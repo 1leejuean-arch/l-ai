@@ -1372,6 +1372,14 @@ async function handleCalendarGet(
   range: CalendarRange,
   rangeLabel: string,
 ) {
+    const normalizedRangeLabel =
+    rangeLabel
+      .trim()
+      .replace(
+        /\s*일정(?:\s*조회)?\s*$/u,
+        "",
+      )
+      .trim() || rangeLabel.trim();
   try {
     const events = await callCalendarN8n(
       "calendar_get",
@@ -1419,7 +1427,7 @@ await saveLastAction(
   sessionId,
   {
     type: "calendar_get",
-    label: `${rangeLabel} 일정 조회`,
+    label: `${normalizedRangeLabel} 일정 조회`,
     data: {
       rangeLabel,
     },
@@ -1428,9 +1436,9 @@ await saveLastAction(
 
     return chatReply(
       formatCalendarEvents(
-        events,
-        rangeLabel,
-      ),
+  events,
+  normalizedRangeLabel,
+),
     );
   } catch {
     return chatError(
@@ -3614,9 +3622,9 @@ const looksLikeCalendarOperationMessage =
   /(?:일정|캘린더|calendar)/iu.test(
     rawMessage,
   ) &&
-  /(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소|조회|보여|확인)/u.test(
-    rawMessage,
-  );
+  /(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소|조회|보여|확인|알려|뭐\s*(?:가\s*)?있|무슨\s*일정|있어|있니|있나)/u.test(
+  rawMessage,
+);
 
 const shouldBypassSemanticMemory =
   looksLikeCalendarOperationMessage ||
@@ -4775,9 +4783,9 @@ const looksLikeFastCalendarGet =
   /(?:일정|캘린더|calendar)/iu.test(
     rawMessage,
   ) &&
-  /(?:보여|조회|확인|알려)/u.test(
-    rawMessage,
-  ) &&
+ /(?:보여|조회|확인|알려|뭐\s*(?:가\s*)?있|무슨\s*일정|있어|있니|있나)/u.test(
+  rawMessage,
+) &&
   /(?:오늘|내일|모레|이번\s*주|다음\s*주|이번\s*달|다음\s*달|\d{4}년\s*\d{1,2}월\s*\d{1,2}일)/u.test(
     rawMessage,
   ) &&
