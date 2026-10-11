@@ -3711,8 +3711,20 @@ const looksLikeCalendarOperationMessage =
   rawMessage,
 );
 
+const looksLikeCalendarToDriveLookupMessage =
+  /(?:일정)/u.test(
+    rawMessage,
+  ) &&
+  /(?:파일|문서)/u.test(
+    rawMessage,
+  ) &&
+  /(?:찾아|검색|보여)/u.test(
+    rawMessage,
+  );
+
 const shouldBypassSemanticMemory =
   looksLikeCalendarOperationMessage ||
+  looksLikeCalendarToDriveLookupMessage ||
   looksLikeShortSelectionReply(
     rawMessage,
   ) ||
@@ -4725,6 +4737,25 @@ const looksLikeCalendarToDriveRequest =
   /(?:찾아|검색|보여)/u.test(
     rawMessage,
   );
+
+if (
+  looksLikeCalendarToDriveRequest &&
+  rememberedCalendarContext &&
+  rememberedCalendarContext.events.length === 0
+) {
+  console.log(
+    "[L-AI Cross Domain] Calendar -> Drive skipped: no calendar events",
+    {
+      sessionId,
+      rangeLabel:
+        rememberedCalendarContext.rangeLabel,
+    },
+  );
+
+  return chatReply(
+    "최근에 확인한 일정이 없어서 관련 파일을 찾을 수 없어. 먼저 찾고 싶은 일정을 조회해줘.",
+  );
+}
 
 if (
   looksLikeCalendarToDriveRequest &&
