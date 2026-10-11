@@ -359,6 +359,91 @@ if (explicitDateMatch) {
   };
 }
 
+const yearlessDateMatch =
+  /(\d{1,2})월(\d{1,2})일/u.exec(
+    normalized,
+  );
+
+if (yearlessDateMatch) {
+  const currentYear =
+    Number(
+      new Intl.DateTimeFormat(
+        "en",
+        {
+          timeZone: "Asia/Seoul",
+          year: "numeric",
+        },
+      ).format(now),
+    );
+
+  const month =
+    Number(yearlessDateMatch[1]);
+
+  const day =
+    Number(yearlessDateMatch[2]);
+
+  const startDate =
+    new Date(
+      Date.UTC(
+        currentYear,
+        month - 1,
+        day,
+      ),
+    );
+
+  const isValidDate =
+    startDate.getUTCFullYear() ===
+      currentYear &&
+    startDate.getUTCMonth() ===
+      month - 1 &&
+    startDate.getUTCDate() === day;
+
+  if (!isValidDate) {
+    return null;
+  }
+
+  const endDate =
+    new Date(startDate);
+
+  endDate.setUTCDate(
+    endDate.getUTCDate() + 1,
+  );
+
+  const toSeoulMidnight = (
+    date: Date,
+  ) => {
+    const yyyy =
+      date.getUTCFullYear();
+
+    const mm =
+      String(
+        date.getUTCMonth() + 1,
+      ).padStart(2, "0");
+
+    const dd =
+      String(
+        date.getUTCDate(),
+      ).padStart(2, "0");
+
+    return `${yyyy}-${mm}-${dd}T00:00:00+09:00`;
+  };
+
+  return {
+    range: {
+      start:
+        toSeoulMidnight(
+          startDate,
+        ),
+      end:
+        toSeoulMidnight(
+          endDate,
+        ),
+    },
+    rangeLabel:
+      `${currentYear}년 ${month}월 ${day}일`,
+  };
+}
+
 if (!normalized.includes("이번주")) {
   return null;
 }
@@ -4786,9 +4871,9 @@ const looksLikeFastCalendarGet =
  /(?:보여|조회|확인|알려|뭐\s*(?:가\s*)?있|무슨\s*일정|있어|있니|있나)/u.test(
   rawMessage,
 ) &&
-  /(?:오늘|내일|모레|이번\s*주|다음\s*주|이번\s*달|다음\s*달|\d{4}년\s*\d{1,2}월\s*\d{1,2}일)/u.test(
-    rawMessage,
-  ) &&
+  /(?:오늘|내일|모레|이번\s*주|다음\s*주|이번\s*달|다음\s*달|(?:\d{4}년\s*)?\d{1,2}월\s*\d{1,2}일)/u.test(
+  rawMessage,
+) &&
   !/(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소)/u.test(
     rawMessage,
   ) &&
