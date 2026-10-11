@@ -4476,8 +4476,14 @@ const prePlan = createPlan({
     )
       ? "사용자 후속 응답"
       : rawMessage,
-  intent: null,
-  confidence: null,
+  intent:
+    looksLikeCalendarToDriveLookupMessage
+      ? "drive_search"
+      : null,
+  confidence:
+    looksLikeCalendarToDriveLookupMessage
+      ? 1
+      : null,
 });
 
 console.log(
