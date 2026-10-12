@@ -30,16 +30,8 @@ export async function GET() {
     },
   ];
 
-  const results: Record<
-    string,
-    {
-      reachable: boolean;
-      status?: number;
-    }
-  > = {};
-
-  for (const target of targets) {
-    try {
+  const entries = await Promise.all(
+    targets.map(async (target) => {
       const controller =
         new AbortController();
 
@@ -48,31 +40,47 @@ export async function GET() {
         5000,
       );
 
-      const response = await fetch(
-        target.url,
-        {
-          method: "HEAD",
-          signal: controller.signal,
-          cache: "no-store",
-        },
-      );
+      try {
+        const response = await fetch(
+          target.url,
+          {
+            method: "HEAD",
+            signal: controller.signal,
+            cache: "no-store",
+          },
+        );
 
-      clearTimeout(timeout);
+        /*
+         * 404 / 405여도 서버 자체가 응답했다면
+         * n8n은 살아있는 것으로 판단.
+         */
+        return [
+          target.name,
+          {
+            reachable: true,
+            status: response.status,
+          },
+        ] as const;
+      } catch {
+        return [
+          target.name,
+          { reachable: false },
+        ] as const;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }),
+  );
 
-      /*
-       * 404 / 405여도 서버 자체가 응답했다면
-       * n8n은 살아있는 것으로 판단.
-       */
-      results[target.name] = {
-        reachable: true,
-        status: response.status,
-      };
-    } catch {
-      results[target.name] = {
-        reachable: false,
-      };
+  const results = Object.fromEntries(
+    entries,
+  ) as Record<
+    string,
+    {
+      reachable: boolean;
+      status?: number;
     }
-  }
+  >;
 
   const ok = Object.values(
     results,

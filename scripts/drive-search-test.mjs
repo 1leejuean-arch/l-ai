@@ -5,6 +5,7 @@ import http from "node:http";
 const MOCK_PORT = 43119;
 const APP_PORT = 43120;
 const driveCalls = [];
+const calendarCalls = [];
 let openAiCalls = 0;
 
 function responseJson(res, value) {
@@ -50,7 +51,7 @@ const mockServer = http.createServer(async (req, res) => {
             { id: "drive-file-1", name: "대의원회의 자료.pptx" },
             { id: "drive-file-2", name: "대의원회의.pdf" },
           ]
-        : body.query === "결재문서"
+        : body.query === "결재" || body.query === "결재문서"
           ? [{ id: "drive-file-3", name: "결재문서.hwp" }]
           : [];
     responseJson(res, files);
@@ -82,6 +83,7 @@ const mockServer = http.createServer(async (req, res) => {
   }
 
   if (req.url === "/calendar") {
+    calendarCalls.push(body);
     responseJson(res, [
       {
         id: "calendar-event-1",
@@ -156,7 +158,10 @@ try {
   const delegateReply = await sendChat(
     "내 드라이브에서 대의원회의 파일 찾아줘",
   );
-  assert.match(delegateReply, /Google Drive에서 2개 찾았어/u);
+  assert.match(
+    delegateReply,
+    /Google Drive에서 .*파일 2개 찾았어/u,
+  );
   assert.match(delegateReply, /대의원회의 자료\.pptx/u);
   assert.match(
     delegateReply,
@@ -164,7 +169,10 @@ try {
   );
 
   const approvalReply = await sendChat("구글 드라이브에서 결재문서 찾아줘");
-  assert.match(approvalReply, /Google Drive에서 1개 찾았어/u);
+  assert.match(
+    approvalReply,
+    /Google Drive에서 .*파일 1개 찾았어/u,
+  );
   assert.match(approvalReply, /결재문서\.hwp/u);
 
   const missingReply = await sendChat(
@@ -176,17 +184,52 @@ try {
   );
 
   assert.deepEqual(driveCalls, [
-    { query: "대의원회의" },
-    { query: "결재문서" },
-    { query: "존재하지않는파일123" },
+    { action: "search", query: "대의원회의" },
+    { action: "search", query: "결재" },
+    { action: "search", query: "존재하지않는파일123" },
   ]);
+  assert.equal(openAiCalls, 0);
+
+  const explicitDateReply = await sendChat(
+    "2026년 9월 20일 일정 보여줘",
+  );
+  assert.match(explicitDateReply, /Calendar 회귀 테스트/u);
+  assert.deepEqual(calendarCalls.at(-1), {
+    action: "calendar_get",
+    data: {
+      start: "2026-09-20T00:00:00+09:00",
+      end: "2026-09-21T00:00:00+09:00",
+    },
+  });
+  assert.equal(openAiCalls, 0);
+
+  await sendChat("9월 20일 일정 보여줘");
+  assert.deepEqual(calendarCalls.at(-1), {
+    action: "calendar_get",
+    data: {
+      start: "2026-09-20T00:00:00+09:00",
+      end: "2026-09-21T00:00:00+09:00",
+    },
+  });
+  assert.equal(openAiCalls, 0);
+
+  assert.match(
+    await sendChat("2월 30일 일정 보여줘"),
+    /유효하지 않은 날짜/u,
+  );
+  assert.match(
+    await sendChat("13월 1일 일정 보여줘"),
+    /유효하지 않은 날짜/u,
+  );
   assert.equal(openAiCalls, 0);
 
   const calendarReply = await sendChat("오늘 일정 뭐 있어?");
   assert.match(calendarReply, /Calendar 회귀 테스트/u);
   assert.equal(openAiCalls, 1);
 
-  console.log("Drive search tests passed (3/3 + Calendar regression).");
+  console.log(
+    "Drive search tests passed (3/3 + Calendar dates 5/5).",
+  );
 } catch (error) {
   console.error(serverOutput);
   throw error;

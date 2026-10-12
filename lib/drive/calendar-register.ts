@@ -24,10 +24,10 @@ export function parseDriveCalendarAddCommand(
   const normalized = message
     .trim()
     .replace(/[.!?。！？]+$/u, "")
-    .replace(/\s+/gu, " ");
+    .replace(/\s+/gu, "");
 
   if (
-    /^(?:전부|전체|모두)\s*(?:일정\s*)?(?:추가|등록|넣어)(?:해\s*줘|해줘)?$/u.test(
+    /^(?:전부|전체|모두)(?:일정)?(?:추가|등록|넣어)(?:해줘|해)?$/u.test(
       normalized,
     )
   ) {
@@ -36,38 +36,56 @@ export function parseDriveCalendarAddCommand(
     };
   }
 
-  const selectedMatch =
-    /^(\d+(?:\s*번)?(?:\s*(?:,|과|와|이랑|랑|하고)\s*\d+(?:\s*번)?)*\s*번)\s*(?:일정\s*)?(?:추가(?:해\s*줘|해줘)?|등록(?:해\s*줘|해줘)?|넣어(?:\s*줘)?)$/u.exec(
+  const commandMatch =
+    /^(.*?)(?:일정)?(?:추가|등록|넣어)(?:해줘|해)?$/u.exec(
       normalized,
     );
 
-  if (!selectedMatch?.[1]) {
-    return null;
-  }
+  const selection =
+    commandMatch?.[1] ?? normalized;
 
-  const numberMatches =
-    selectedMatch[1].match(
-      /\d+/gu,
-    );
+  const tokens = selection.split(
+    /(?:,|과|와|이랑|랑|하고)/u,
+  );
+
+  const ordinalIndexes: Record<string, number> = {
+    첫번째: 0,
+    첫째: 0,
+    두번째: 1,
+    둘째: 1,
+    세번째: 2,
+    셋째: 2,
+    네번째: 3,
+    넷째: 3,
+    다섯번째: 4,
+    다섯째: 4,
+  };
+
+  const indexes: Array<number | null> = tokens.map((token) => {
+    const numericMatch = /^(\d+)번?$/u.exec(token);
+
+    if (numericMatch) {
+      return Number(numericMatch[1]) - 1;
+    }
+
+    return ordinalIndexes[token] ?? null;
+  });
 
   if (
-    !numberMatches ||
-    numberMatches.length === 0
+    indexes.length === 0 ||
+    indexes.some(
+      (index) => index === null || !Number.isInteger(index),
+    )
   ) {
     return null;
   }
 
-  const indexes = [
-    ...new Set(
-      numberMatches.map(
-        (number) =>
-          Number(number) - 1,
-      ),
-    ),
+  const uniqueIndexes = [
+    ...new Set(indexes as number[]),
   ];
 
   if (
-    indexes.some(
+    uniqueIndexes.some(
       (index) =>
         !Number.isInteger(index) ||
         index < 0,
@@ -78,7 +96,7 @@ export function parseDriveCalendarAddCommand(
 
   return {
     kind: "selected",
-    indexes,
+    indexes: uniqueIndexes,
   };
 }
 
@@ -89,7 +107,7 @@ export function isDriveCalendarCancelCommand(
     .trim()
     .replace(/[.!?。！？]+$/u, "");
 
-  return /^(?:일정\s*)?(?:추가\s*)?(?:취소|취소해\s*줘|취소해줘)$/u.test(
+  return /^(?:일정\s*)?(?:추가\s*)?(?:취소|취소해\s*줘|취소해줘|아니|아니야|아니요|ㄴㄴ)$/u.test(
     normalized,
   );
 }

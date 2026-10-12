@@ -227,6 +227,7 @@ const CANCEL_MESSAGES = new Set([
   "취소해줘",
   "ㄴㄴ",
   "아니",
+  "아니야",
   "아니요",
   "그만",
 ]);
@@ -562,6 +563,48 @@ if (!normalized.includes("이번주")) {
   };
 }
 
+function hasInvalidExplicitCalendarDate(
+  message: string,
+  now = new Date(),
+) {
+  const normalized =
+    message.replace(/\s+/gu, "");
+
+  const match =
+    /(?:(\d{4})년)?(\d{1,2})월(\d{1,2})일/u.exec(
+      normalized,
+    );
+
+  if (!match) {
+    return false;
+  }
+
+  const currentYear = Number(
+    new Intl.DateTimeFormat(
+      "en",
+      {
+        timeZone: "Asia/Seoul",
+        year: "numeric",
+      },
+    ).format(now),
+  );
+
+  const year = match[1]
+    ? Number(match[1])
+    : currentYear;
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(
+    Date.UTC(year, month - 1, day),
+  );
+
+  return (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  );
+}
+
 function parseSelectionIndex(message: string, candidateCount: number) {
   const normalized = normalizeShortReply(message).replace(/\s/g, "");
   const wordIndexes: Record<string, number> = {
@@ -571,6 +614,10 @@ function parseSelectionIndex(message: string, candidateCount: number) {
     둘째: 1,
     세번째: 2,
     셋째: 2,
+    네번째: 3,
+    넷째: 3,
+    다섯번째: 4,
+    다섯째: 4,
   };
   const numericMatch = /^(\d+)번?$/.exec(normalized);
   const index = numericMatch
@@ -2128,9 +2175,7 @@ async function handleCalendarPending(
     )
   ) {
     if (!rawPending) {
-      return chatReply(
-        "취소할 일정 작업이 없습니다.",
-      );
+      return null;
     }
 
     console.log(
@@ -2306,11 +2351,14 @@ async function handleCalendarPending(
    * 승인 메시지만 들어온 경우
    */
   if (
-    GENERIC_APPROVAL_MESSAGES.has(
-      rawShortReply,
-    ) ||
-    isActionApproval(
-      rawShortReply,
+    rawPending &&
+    (
+      GENERIC_APPROVAL_MESSAGES.has(
+        rawShortReply,
+      ) ||
+      isActionApproval(
+        rawShortReply,
+      )
     )
   ) {
     return chatReply(
@@ -3497,6 +3545,77 @@ if (
 
 let message = rawMessage;
 
+/*
+ * Pending과 짧은 번호 선택은 의미 기억/AI 라우팅보다 먼저 처리한다.
+ * 특히 "2번"은 진행 중인 작업이 있을 때 Action History로 넘어가면 안 된다.
+ */
+const earlyShortReply =
+  normalizeShortReply(rawMessage);
+
+const earlyCalendarPendingResponse =
+  await handleCalendarPending(
+    sessionId,
+    rawMessage,
+    earlyShortReply,
+  );
+
+if (earlyCalendarPendingResponse) {
+  return earlyCalendarPendingResponse;
+}
+
+const earlyDriveCalendarPendingResponse =
+  looksLikeDriveCalendarAddReply(rawMessage) ||
+  looksLikeShortSelectionReply(rawMessage) ||
+  /^(?:일정\s*)?(?:추가\s*)?(?:취소|취소해\s*줘|취소해줘|아니|아니야|아니요|ㄴㄴ)$/u.test(
+    rawMessage.trim(),
+  )
+    ? await handleDriveCalendarFlow(
+        rawMessage,
+        sessionId,
+        { pendingOnly: true },
+      )
+    : null;
+
+if (earlyDriveCalendarPendingResponse) {
+  return earlyDriveCalendarPendingResponse;
+}
+
+if (
+  looksLikeShortSelectionReply(
+    rawMessage,
+  )
+) {
+  const actionHistory =
+    await getActionHistory(
+      sessionId,
+    );
+
+  const selectedIndex =
+    parseSelectionIndex(
+      rawMessage,
+      actionHistory.length,
+    );
+
+  if (selectedIndex !== null) {
+    const selectedAction =
+      actionHistory[selectedIndex];
+
+    console.log(
+      "[L-AI Memory] Priority selected: action_history",
+      {
+        sessionId,
+        index: selectedIndex + 1,
+        type: selectedAction.type,
+        label: selectedAction.label,
+      },
+    );
+
+    return chatReply(
+      `최근 작업 ${selectedIndex + 1}번은 **${selectedAction.label}**이야.`,
+    );
+  }
+}
+
 const normalizedSelfCheckMessage =
   rawMessage
     .trim()
@@ -3697,13 +3816,45 @@ if (looksLikeLearningRollbackRequest) {
   );
 }
 
-const looksLikeCalendarOperationMessage =
-  /(?:일정|캘린더|calendar)/iu.test(
+const looksLikeImplicitCalendarMutationMessage =
+  /(?:회의|약속|행사|수업)/u.test(
     rawMessage,
   ) &&
-  /(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소|조회|보여|확인|알려|뭐\s*(?:가\s*)?있|무슨\s*일정|있어|있니|있나)/u.test(
-  rawMessage,
-);
+  (
+    /(?:삭제|지워)/u.test(
+      rawMessage,
+    ) ||
+    (
+      /(?:오전|오후|\d{1,2}\s*(?:시|:\d{2}))/u.test(
+        rawMessage,
+      ) &&
+      /(?:수정|바꿔|변경|옮겨|미뤄|당겨)/u.test(
+        rawMessage,
+      )
+    )
+  );
+
+const looksLikeCalendarOperationMessage =
+  (
+    /(?:일정|캘린더|calendar)/iu.test(
+      rawMessage,
+    ) &&
+    /(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소|조회|보여|확인|알려|뭐\s*(?:가\s*)?있|무슨\s*일정|있어|있니|있나)/u.test(
+      rawMessage,
+    )
+  ) ||
+  looksLikeImplicitCalendarMutationMessage;
+
+if (
+  looksLikeCalendarOperationMessage &&
+  hasInvalidExplicitCalendarDate(
+    rawMessage,
+  )
+) {
+  return chatReply(
+    "유효하지 않은 날짜야. 실제 달력에 있는 날짜로 다시 알려줘.",
+  );
+}
 
 const looksLikeCalendarToDriveLookupMessage =
   /(?:일정)/u.test(
@@ -4246,14 +4397,7 @@ if (looksLikeSemanticAdd) {
 }
 
 const looksLikeLearningUpdateRequest =
-  !(
-    /(?:일정|캘린더|calendar)/iu.test(
-      rawMessage,
-    ) &&
-    /(?:추가|등록|만들|수정|바꿔|변경|삭제|지워|취소|조회|보여|확인)/u.test(
-      rawMessage,
-    )
-  ) &&
+  !looksLikeCalendarOperationMessage &&
   /(?:바꿔|바꿔줘|변경|변경해|변경해줘|수정|수정해|수정해줘|정정|정정해|정정해줘|아니고|아니야)/u.test(
     rawMessage,
   );
@@ -4654,81 +4798,6 @@ message = crossContextResult.message;
 
 if (N8N_TEST_MESSAGES.has(message)) {
   return handleN8nTest(message);
-}
-
-const rawShortReply =
-  normalizeShortReply(rawMessage);
-
-/*
- * ============================================================
- * 3. CALENDAR PENDING HANDLER
- *
- * 사용자가 이전 Calendar 작업에 대해
- * 짧게 답한 내용을 AI Router보다 먼저 처리한다.
- *
- * 예:
- * "응"
- * "추가"
- * "취소"
- * "1번"
- *
- * 처리 대상:
- * - Calendar create 승인
- * - update/delete 대상 선택
- * - clarification 응답
- * - pending 취소
- *
- * IMPORTANT:
- * 이 단계는 AI Router보다 먼저 실행되어야 한다.
- * 짧은 승인/선택 답변을 일반 대화로 오해하지 않게 한다.
- * ============================================================
- */
-
-const calendarPendingResponse =
-  await handleCalendarPending(
-    sessionId,
-    rawMessage,
-    rawShortReply,
-  );
-
-if (calendarPendingResponse) {
-  return calendarPendingResponse;
-}
-
-if (
-  looksLikeShortSelectionReply(
-    rawMessage,
-  )
-) {
-  const actionHistory =
-    await getActionHistory(
-      sessionId,
-    );
-
-  const selectedIndex =
-    parseSelectionIndex(
-      rawMessage,
-      actionHistory.length,
-    );
-
-  if (selectedIndex !== null) {
-    const selectedAction =
-      actionHistory[selectedIndex];
-
-    console.log(
-      "[L-AI Memory] Priority selected: action_history",
-      {
-        sessionId,
-        index: selectedIndex + 1,
-        type: selectedAction.type,
-        label: selectedAction.label,
-      },
-    );
-
-    return chatReply(
-      `최근 작업 ${selectedIndex + 1}번은 **${selectedAction.label}**이야.`,
-    );
-  }
 }
 
 /*

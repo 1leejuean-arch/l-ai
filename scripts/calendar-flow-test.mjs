@@ -82,9 +82,36 @@ const mockServer = http.createServer(async (req, res) => {
   if (req.url === "/v1/responses") {
     openAiCalls += 1;
     const input = String(body.input);
+    const instructions = String(body.instructions);
     let intent;
 
-    if (input.includes("방금 만든 테스트 일정 오후 6시로 바꿔줘")) {
+    if (instructions.includes("공통 대화 문맥 해석기")) {
+      intent = {
+        domain: "unknown",
+        action: "none",
+        confidence: 0,
+        reason: "테스트 기본값",
+      };
+    } else if (instructions.includes("자연어 이해 라우터")) {
+      const routerIntent = input.includes("삭제해줘")
+        ? "calendar_delete"
+        : "calendar_update";
+
+      intent = {
+        intent: routerIntent,
+        normalizedMessage: input,
+        confidence: 1,
+        target: {},
+        filters: {},
+        action: {
+          updateCalendar: routerIntent === "calendar_update",
+          deleteCalendar: routerIntent === "calendar_delete",
+        },
+        context: {},
+        needsClarification: false,
+        clarificationQuestion: null,
+      };
+    } else if (input.includes("방금 만든 테스트 일정 오후 6시로 바꿔줘")) {
       intent = calendarIntent({
         action: "update_calendar_event",
         start: UPDATE_DAY_START,
@@ -223,20 +250,21 @@ function waitForServer(url, timeoutMs = 20_000) {
   });
 }
 
+let conversationCount = 0;
+
 function createConversation() {
-  let cookie = "";
+  const sessionId =
+    `calendar-flow-test-${++conversationCount}`;
 
   return async (message) => {
     const response = await fetch(`http://127.0.0.1:${APP_PORT}/api/chat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(cookie ? { Cookie: cookie } : {}),
+        "x-session-id": sessionId,
       },
       body: JSON.stringify({ message }),
     });
-    const setCookie = response.headers.get("set-cookie");
-    if (setCookie) cookie = setCookie.split(";", 1)[0];
     const body = await response.json();
     assert.equal(response.ok, true, JSON.stringify(body));
     return body.reply;

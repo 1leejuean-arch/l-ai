@@ -70,6 +70,9 @@ function reply(message: string) {
 export async function handleDriveCalendarFlow(
   message: string,
   sessionId: string,
+  options?: {
+    pendingOnly?: boolean;
+  },
 ): Promise<Response | null> {
   /*
    * 1. 이미 추출해둔 일정 후보 처리
@@ -485,8 +488,11 @@ const completionPlan =
   });
 
 const completedToolIds =
-  added.length > 0 ||
-  duplicates.length > 0
+  remainingEvents.length === 0 &&
+  (
+    added.length > 0 ||
+    duplicates.length > 0
+  )
     ? [
         "drive.read",
         "drive.calendar.extract",
@@ -505,6 +511,15 @@ const completionReflection =
       failed:
         added.length === 0 &&
         failed.length > 0,
+      waitingFor:
+        remainingEvents.length > 0 &&
+        !(
+          added.length === 0 &&
+          duplicates.length === 0 &&
+          failed.length > 0
+        )
+          ? "user_selection"
+          : null,
     },
   );
 
@@ -586,6 +601,10 @@ if (updatedTrace) {
     output.join("\n"),
   );
 }
+
+  if (options?.pendingOnly) {
+    return null;
+  }
 
   /*
    * 2. Drive 문서에서 일정 찾기 명령
@@ -799,7 +818,7 @@ const reflection =
         "drive.calendar.extract",
       ],
       waitingFor:
-        "user_confirmation",
+        "user_selection",
     },
   );
 
