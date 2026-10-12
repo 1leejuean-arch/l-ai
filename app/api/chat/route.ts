@@ -261,6 +261,20 @@ function looksLikeShortSelectionReply(
   );
 }
 
+function looksLikeDriveCalendarAddReply(
+  message: string,
+) {
+  const normalized =
+    normalizeShortReply(message).replace(
+      /\s+/gu,
+      "",
+    );
+
+  return /^(?:(?:전부|모두)(?:추가|등록)(?:해줘|해)?|(?:\d+번?)(?:(?:이랑|하고|와|과|,)\d+번?)*(?:추가|등록)(?:해줘|해)?)$/u.test(
+    normalized,
+  );
+}
+
 function looksLikeShortPendingControlReply(
   message: string,
 ) {
@@ -2364,31 +2378,11 @@ async function preprocessDriveCalendarCrossContext(
     },
   );
 
-  const text =
-    await readGoogleDriveFile(
-      rememberedDriveFile.fileId,
-    );
-
-  if (!text) {
-    return {
-      message: currentMessage,
-      response: chatReply(
-        `${rememberedDriveFile.fileName} 파일에서 읽을 수 있는 내용을 찾지 못했어.`,
-      ),
-    };
-  }
-
-  /*
-   * 실제 일정 등록은 여기서 하지 않는다.
-   * 기존 Drive → Calendar flow가 이해할 수 있는
-   * message로만 변환한다.
-   */
   return {
-    message:
-      `${rememberedDriveFile.fileName} 파일 내용에서 일정 찾아서 캘린더에 추가해줘.\n\n` +
-      text,
-    response: null,
-  };
+  message:
+    "그 파일에서 일정 찾아서 캘린더에 추가해줘",
+  response: null,
+};
 }
 
 async function handleAiRouter(
@@ -3715,6 +3709,9 @@ const looksLikeCalendarToDriveLookupMessage =
   /(?:일정)/u.test(
     rawMessage,
   ) &&
+  /(?:관련|연관)/u.test(
+    rawMessage,
+  ) &&
   /(?:파일|문서)/u.test(
     rawMessage,
   ) &&
@@ -3722,9 +3719,44 @@ const looksLikeCalendarToDriveLookupMessage =
     rawMessage,
   );
 
+const looksLikeDriveToCalendarMessage =
+  /(?:그\s*파일|아까\s*파일|방금\s*파일|그\s*문서)/u.test(
+    rawMessage,
+  ) &&
+  /(?:일정|캘린더|달력)/u.test(
+    rawMessage,
+  ) &&
+  /(?:추가|등록|넣어|만들어|찾아)/u.test(
+    rawMessage,
+  );
+
+const directDriveSearchIntent =
+  parseDriveSearchIntent(rawMessage);
+
+const looksLikeDirectDriveSearchMessage =
+  directDriveSearchIntent?.action ===
+    "search" &&
+  Boolean(
+    directDriveSearchIntent.query,
+  ) &&
+  /(?:찾아|검색|보여)/u.test(
+    rawMessage,
+  ) &&
+  !/(?:그\s*(?:파일|문서|일정|거)|해당\s*(?:파일|문서|일정)|아까|방금|최근)/u.test(
+    rawMessage,
+  ) &&
+  !/(?:캘린더|calendar)/iu.test(
+    rawMessage,
+  );
+
 const shouldBypassSemanticMemory =
   looksLikeCalendarOperationMessage ||
   looksLikeCalendarToDriveLookupMessage ||
+  looksLikeDriveToCalendarMessage ||
+  looksLikeDirectDriveSearchMessage ||
+  looksLikeDriveCalendarAddReply(
+    rawMessage,
+  ) ||
   looksLikeShortSelectionReply(
     rawMessage,
   ) ||
@@ -4477,13 +4509,15 @@ const prePlan = createPlan({
       ? "사용자 후속 응답"
       : rawMessage,
   intent:
-    looksLikeCalendarToDriveLookupMessage
-      ? "drive_search"
-      : null,
-  confidence:
-    looksLikeCalendarToDriveLookupMessage
-      ? 1
-      : null,
+  looksLikeCalendarToDriveLookupMessage ||
+  looksLikeDirectDriveSearchMessage
+    ? "drive_search"
+    : null,
+confidence:
+  looksLikeCalendarToDriveLookupMessage ||
+  looksLikeDirectDriveSearchMessage
+    ? 1
+    : null,
 });
 
 console.log(
@@ -4568,6 +4602,38 @@ console.log(
   "[L-AI Perf] Context hydration:",
   `${Date.now() - contextHydrationStartedAt}ms`,
 );
+
+if (
+  looksLikeDirectDriveSearchMessage &&
+  directDriveSearchIntent?.action ===
+    "search" &&
+  directDriveSearchIntent.query
+) {
+  const fastPathStartedAt =
+    Date.now();
+
+  console.log(
+    "[L-AI Fast Path] Direct Drive search",
+    {
+      original: rawMessage,
+      query:
+        directDriveSearchIntent.query,
+    },
+  );
+
+  const response =
+    await handleDriveSearch(
+      sessionId,
+      directDriveSearchIntent.query,
+    );
+
+  console.log(
+    "[L-AI Perf] Drive fast path:",
+    `${Date.now() - fastPathStartedAt}ms`,
+  );
+
+  return response;
+}
 
 /*
  * 2. CROSS-CONTEXT PREPROCESSING
@@ -4854,12 +4920,14 @@ if (calendarDirectMemoryResponse) {
  */
 
 const driveContextFollowUpResponse =
-  await handleDriveContextFollowUp(
-    sessionId,
-    rawMessage,
-    message,
-    Boolean(rememberedCalendarContext),
-  );
+  looksLikeDriveToCalendarMessage
+    ? null
+    : await handleDriveContextFollowUp(
+        sessionId,
+        rawMessage,
+        message,
+        Boolean(rememberedCalendarContext),
+      );
 
 if (driveContextFollowUpResponse) {
   return driveContextFollowUpResponse;
