@@ -127,8 +127,8 @@ const mockServer = http.createServer(async (req, res) => {
         },
         {
           title: "Drive 두 번째 일정",
-          start: "2026-10-22T14:00:00+09:00",
-          end: "2026-10-22T15:00:00+09:00",
+          start: "2026-10-21T14:00:00+09:00",
+          end: "2026-10-21T15:00:00+09:00",
           location: null,
           description: "Drive 후보 2",
           allDay: false,
@@ -249,6 +249,7 @@ try {
   await settleLogs();
   const singlePlanLogs = serverOutput.slice(singlePlanLogStart);
   assert.match(singlePlanLogs, /toolId: 'mail\.search'/u);
+  assert.match(singlePlanLogs, /Context hydration: \d+ms \{ mode: 'none' \}/u);
   assert.doesNotMatch(singlePlanLogs, /mail\.calendar\.extract|calendar\.create/u);
 
   const singleSelectionLogStart = serverOutput.length;
@@ -326,16 +327,41 @@ try {
   const drivePendingSession = "drive-calendar-priority-test";
   await chat("방송부에서 온 메일 찾아줘", drivePendingSession);
   await chat("드라이브에서 일정 자료 찾아줘", drivePendingSession);
+  const driveCalendarCandidates =
+    await chat("그 파일에서 일정 찾아줘", drivePendingSession);
   assert.match(
-    await chat("그 파일에서 일정 찾아줘", drivePendingSession),
+    driveCalendarCandidates,
     /Drive 두 번째 일정/u,
   );
+  assert.match(
+    driveCalendarCandidates,
+    /1\. Drive 첫 번째 일정\n\n시작: 2026년 10월 21일 오전 10:00 {2}\n종료: 2026년 10월 21일 오전 11:00 {2}\n추가 내용: Drive 후보 1/u,
+  );
+  assert.doesNotMatch(driveCalendarCandidates, /2026-10-21T/u);
   assert.match(
     await chat("2번 추가해줘", drivePendingSession),
     /Drive 두 번째 일정/u,
   );
   assert.equal(calendarCalls.at(-1).action, "calendar_create");
   assert.equal(calendarCalls.at(-1).data.title, "Drive 두 번째 일정");
+
+  const driveCalendarCacheSession = "drive-calendar-cache-test";
+  await chat("드라이브에서 일정 자료 찾아줘", driveCalendarCacheSession);
+  await chat("그 파일에서 일정 찾아줘", driveCalendarCacheSession);
+  const calendarCacheCallStart = calendarCalls.length;
+  assert.match(
+    await chat("전부 추가해줘", driveCalendarCacheSession),
+    /Drive 첫 번째 일정/u,
+  );
+  const calendarCacheCalls = calendarCalls.slice(calendarCacheCallStart);
+  assert.equal(
+    calendarCacheCalls.filter(({ action }) => action === "calendar_get").length,
+    1,
+  );
+  assert.equal(
+    calendarCacheCalls.filter(({ action }) => action === "calendar_create").length,
+    2,
+  );
 
   assert.match(await chat("그 메일에 참석한다고 답장 초안 만들어줘"), /아직 전송하지 않았어/u);
   assert.match(await chat("전송"), /실제 발송은 하지 않았어/u);

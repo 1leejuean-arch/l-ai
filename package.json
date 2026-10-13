@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test:calendar-flow": "node scripts/calendar-flow-test.mjs",
     "test:drive-search": "node scripts/drive-search-test.mjs",
-    "test:mail-flow": "node scripts/mail-flow-test.mjs"
+    "test:mail-flow": "node scripts/mail-flow-test.mjs",
+    "test:health-cache": "node scripts/health-cache-test.mjs"
   },
   "dependencies": {
     "next": "16.3.3",

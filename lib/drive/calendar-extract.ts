@@ -373,11 +373,26 @@ function formatKoreanDateTime(
       year: "numeric",
       month: "long",
       day: "numeric",
-      weekday: "short",
       hour: "numeric",
       minute: "2-digit",
+      hour12: true,
     },
   ).format(date);
+}
+
+function formatKoreanDate(value: string) {
+  const date = new Date(`${value}T00:00:00+09:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return "날짜 확인 필요";
+  }
+
+  return new Intl.DateTimeFormat("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(date);
 }
 
 export function formatDriveCalendarCandidates(
@@ -396,21 +411,20 @@ export function formatDriveCalendarCandidates(
   const lines = events.map(
     (event, index) => {
       const start = event.allDay
-        ? event.start
+        ? formatKoreanDate(event.start)
         : formatKoreanDateTime(
             event.start,
           );
 
       const details = [
-        `**${index + 1}. ${event.title}**`,
-        `- 시작: ${start}`,
+        `시작: ${start}`,
       ];
 
       if (event.end) {
         details.push(
-          `- 종료: ${
+          `종료: ${
             event.allDay
-              ? event.end
+              ? formatKoreanDate(event.end)
               : formatKoreanDateTime(
                   event.end,
                 )
@@ -420,22 +434,26 @@ export function formatDriveCalendarCandidates(
 
       if (event.location) {
         details.push(
-          `- 장소: ${event.location}`,
+          `장소: ${event.location}`,
         );
       }
 
       if (event.description) {
         details.push(
-          `- 참고: ${event.description}`,
+          `추가 내용: ${event.description}`,
         );
       }
 
-      return details.join("\n");
+      return [
+        `${index + 1}. ${event.title}`,
+        "",
+        details.join("  \n"),
+      ].join("\n");
     },
   );
 
   return [
-    `**${fileName}에서 ${events.length}개의 일정 후보를 찾았어.**`,
+    `${fileName}에서 ${events.length}개의 일정 후보를 찾았어.`,
     "",
     ...lines.flatMap((line) => [
       line,

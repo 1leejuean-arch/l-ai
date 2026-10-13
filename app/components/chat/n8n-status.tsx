@@ -7,7 +7,16 @@ export function N8nStatus() {
   const [online, setOnline] = useState<boolean | null>(null);
 
   useEffect(() => {
+    let disposed = false;
+    let requestInFlight = false;
+
     const check = async () => {
+      if (requestInFlight || document.visibilityState === "hidden") {
+        return;
+      }
+
+      requestInFlight = true;
+
       try {
         const response = await fetch("/api/health/n8n", {
           cache: "no-store",
@@ -15,17 +24,43 @@ export function N8nStatus() {
 
         const data: { ok?: boolean } = await response.json();
 
-        setOnline(Boolean(data.ok));
+        if (!disposed) {
+          setOnline(Boolean(data.ok));
+        }
       } catch {
-        setOnline(false);
+        if (!disposed) {
+          setOnline(false);
+        }
+      } finally {
+        requestInFlight = false;
       }
     };
 
-    check();
+    void check();
 
-    const timer = setInterval(check, 30000);
+    const timer = setInterval(() => {
+      void check();
+    }, 60000);
 
-    return () => clearInterval(timer);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void check();
+      }
+    };
+
+    document.addEventListener(
+      "visibilitychange",
+      handleVisibilityChange,
+    );
+
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibilityChange,
+      );
+    };
   }, []);
 
   return (

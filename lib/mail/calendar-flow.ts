@@ -1,6 +1,7 @@
 import "server-only";
 
 import { callCalendarN8n } from "@/lib/calendar/n8n";
+import type { GoogleCalendarEvent } from "@/lib/calendar/types";
 import { createPlan } from "@/lib/brain/planner";
 import { createReflection } from "@/lib/brain/reflection";
 import {
@@ -197,7 +198,9 @@ export async function handlePendingMailCalendar(
   );
   if (!command && !cancel && !genericAdd) return null;
 
+  const registrationStartedAt = Date.now();
   const pending = await getPending(sessionId);
+  const pendingRestoreMs = Date.now() - registrationStartedAt;
   if (!pending) return null;
 
   if (!command && genericAdd && pending.events.length === 1) {
@@ -232,14 +235,22 @@ export async function handlePendingMailCalendar(
   const added: string[] = [];
   const duplicates: string[] = [];
   const failed: string[] = [];
+  const existingEventsByRange = new Map<string, GoogleCalendarEvent[]>();
+  let duplicateCheckRequests = 0;
 
   for (const index of indexes) {
     const event = driveCandidateToCalendarEvent(pending.events[index]);
     try {
-      const existing = await callCalendarN8n(
-        "calendar_get",
-        getCalendarCheckRange(event),
-      );
+      const range = getCalendarCheckRange(event);
+      const rangeKey = `${range.start}|${range.end}`;
+      let existing = existingEventsByRange.get(rangeKey);
+
+      if (!existing) {
+        existing = await callCalendarN8n("calendar_get", range);
+        existingEventsByRange.set(rangeKey, existing);
+        duplicateCheckRequests += 1;
+      }
+
       if (isDuplicateCalendarEvent(event, existing)) {
         duplicates.push(event.title);
         resolved.add(index);
@@ -247,6 +258,11 @@ export async function handlePendingMailCalendar(
       }
 
       await callCalendarN8n("calendar_create", event);
+      existing.push({
+        summary: event.title,
+        start: { dateTime: event.start },
+        end: { dateTime: event.end },
+      });
       await saveLastAction(sessionId, {
         type: "calendar_create",
         label: `${event.title} 일정 추가`,
@@ -298,6 +314,19 @@ export async function handlePendingMailCalendar(
     failed.length ? `등록 실패: ${failed.join(", ")}` : null,
     remaining.length ? `남은 후보: ${remaining.length}개` : "처리할 일정 후보가 모두 끝났어.",
   ].filter(Boolean);
+
+  console.log(
+    "[L-AI Perf] Mail Calendar registration:",
+    `${Date.now() - registrationStartedAt}ms`,
+    {
+      pendingRestoreMs,
+      selected: indexes.length,
+      duplicateCheckRequests,
+      created: added.length,
+      duplicates: duplicates.length,
+      failed: failed.length,
+    },
+  );
 
   return reply(output.join("\n\n"));
 }

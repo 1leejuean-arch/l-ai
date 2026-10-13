@@ -70,6 +70,7 @@ async function sendCalendarRequest<A extends CalendarAction>(
   data: CalendarActionData[A],
 ) {
   let response: Response;
+  const startedAt = Date.now();
 
   try {
     response = await fetch(getCalendarUrl(), {
@@ -84,6 +85,12 @@ async function sendCalendarRequest<A extends CalendarAction>(
     console.error("[Calendar] Webhook request failed.", error);
     console.error("[Calendar] Target URL:", getCalendarUrl());
     throw new Error("Calendar webhook request failed");
+  } finally {
+    console.log(
+      "[L-AI Perf] Calendar API:",
+      `${Date.now() - startedAt}ms`,
+      { action },
+    );
   }
 
   if (!response.ok) {

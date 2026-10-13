@@ -55,6 +55,7 @@ async function callDriveWebhook(
   payload: Record<string, unknown> = {},
 ) {
   let response: Response;
+  const startedAt = Date.now();
 
   try {
     response = await fetch(getDriveUrl(), {
@@ -71,6 +72,12 @@ async function callDriveWebhook(
   } catch (error) {
     console.error("[Drive] Webhook request failed.", error);
     throw new Error("Drive webhook request failed");
+  } finally {
+    console.log(
+      "[L-AI Perf] Drive API:",
+      `${Date.now() - startedAt}ms`,
+      { action },
+    );
   }
 
   if (!response.ok) {

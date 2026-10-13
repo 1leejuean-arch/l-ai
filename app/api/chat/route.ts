@@ -943,29 +943,45 @@ function formatMailDraft(draft: MailDraft) {
 async function handleMailSearch(sessionId: string, query: string) {
   try {
     const emails = await searchLJmail(query, { limit: 10 });
-    await saveLastAction(sessionId, {
+
+    saveMailContext(sessionId, query, emails);
+
+    const persistenceStartedAt = Date.now();
+    const actionPersistence = saveLastAction(sessionId, {
       type: "mail_search",
       label: `${query} 메일 검색`,
       data: { query, resultCount: emails.length },
     });
-    saveMailContext(sessionId, query, emails);
+    const brainPersistence = (async () => {
+      const activeTrace = await getActiveBrainTrace(sessionId);
+      if (!activeTrace) return;
 
-    const activeTrace = await getActiveBrainTrace(sessionId);
-    if (activeTrace) {
       const reflection = createReflection(activeTrace.plan, {
         completedToolIds: ["mail.search"],
         waitingFor: emails.length > 1 ? "user_selection" : null,
       });
+
       if (emails.length > 1) {
         await updateBrainTrace(sessionId, {
           state: "waiting",
           waitingFor: "user_selection",
           reflection,
         });
-      } else {
-        await completeBrainTrace(sessionId, reflection);
+        return;
       }
-    }
+
+      await completeBrainTrace(sessionId, reflection);
+    })();
+
+    await Promise.all([
+      actionPersistence,
+      brainPersistence,
+    ]);
+
+    console.log(
+      "[L-AI Perf] Mail post-search persistence:",
+      `${Date.now() - persistenceStartedAt}ms`,
+    );
 
     if (emails.length === 0) {
       return chatReply(`'${query}'와 관련된 메일을 찾지 못했어.`);
@@ -4118,11 +4134,15 @@ const looksLikeDirectDriveSearchMessage =
     rawMessage,
   );
 
+const looksLikeDriveContextFollowUpMessage =
+  isDriveContextFollowUp(rawMessage);
+
 const shouldBypassSemanticMemory =
   looksLikeCalendarOperationMessage ||
   looksLikeCalendarToDriveLookupMessage ||
   looksLikeDriveToCalendarMessage ||
   looksLikeDirectDriveSearchMessage ||
+  looksLikeDriveContextFollowUpMessage ||
   Boolean(directMailSearchQuery) ||
   Boolean(mailFollowUpAction) ||
   calendarMailDraftRequest ||
@@ -4884,11 +4904,13 @@ const prePlan = createPlan({
         ? "mail_summary"
         : mailFollowUpAction === "calendar"
           ? "mail_calendar_extract"
-          : calendarMailDraftRequest || driveMailDraftRequest || genericMailDraftRequest || mailFollowUpAction === "reply_draft" || mailFollowUpAction === "forward_draft"
-            ? "mail_draft"
-            : looksLikeCalendarToDriveLookupMessage || looksLikeDirectDriveSearchMessage
-              ? "drive_search"
-              : null,
+          : driveMailDraftRequest
+            ? "drive_mail_draft"
+            : calendarMailDraftRequest || genericMailDraftRequest || mailFollowUpAction === "reply_draft" || mailFollowUpAction === "forward_draft"
+              ? "mail_draft"
+              : looksLikeCalendarToDriveLookupMessage || looksLikeDirectDriveSearchMessage
+                ? "drive_search"
+                : null,
 confidence:
   directMailSearchQuery ||
   mailFollowUpAction ||
@@ -4919,9 +4941,6 @@ console.log(
   "[L-AI Perf] Brain preparation:",
   `${Date.now() - brainPreparationStartedAt}ms`,
 );
-
-const contextHydrationStartedAt =
-  Date.now();
 
 const brainTraceStartedAt =
   Date.now();
@@ -4976,12 +4995,58 @@ console.log(
  * ============================================================
  */
 
-await hydrateCalendarContext(sessionId);
-await hydrateDriveContext(sessionId);
+const contextHydrationStartedAt =
+  Date.now();
+
+type ContextHydrationMode =
+  | "none"
+  | "calendar"
+  | "drive"
+  | "both";
+
+const contextHydrationMode: ContextHydrationMode =
+  directMailSearchQuery ||
+  mailFollowUpAction ||
+  genericMailDraftRequest
+    ? "none"
+    : calendarMailDraftRequest ||
+        looksLikeCalendarToDriveLookupMessage ||
+        looksLikeCalendarOperationMessage
+      ? "calendar"
+      : driveMailDraftRequest ||
+          looksLikeDriveToCalendarMessage ||
+          looksLikeDriveContextFollowUpMessage
+        ? "drive"
+        : looksLikeDirectDriveSearchMessage
+          ? "none"
+          : "both";
+
+const contextHydrationTasks: Promise<void>[] = [];
+
+if (
+  contextHydrationMode === "calendar" ||
+  contextHydrationMode === "both"
+) {
+  contextHydrationTasks.push(
+    hydrateCalendarContext(sessionId),
+  );
+}
+
+if (
+  contextHydrationMode === "drive" ||
+  contextHydrationMode === "both"
+) {
+  contextHydrationTasks.push(
+    hydrateDriveContext(sessionId),
+  );
+}
+
+await Promise.all(contextHydrationTasks);
 
 console.log(
   "[L-AI Perf] Context hydration:",
   `${Date.now() - contextHydrationStartedAt}ms`,
+  { mode: contextHydrationMode },
 );
 
 if (directMailSearchQuery) {
@@ -5010,24 +5075,28 @@ if (mailFollowUpAction) {
   }
 
   if (mailFollowUpAction === "read") {
-    await saveLastAction(sessionId, {
-      type: "mail_read",
-      label: `${selectedMail.subject || "메일"} 읽기`,
-      data: { mailId: selectedMail.id },
-    });
-    await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.read"] }));
+    await Promise.all([
+      saveLastAction(sessionId, {
+        type: "mail_read",
+        label: `${selectedMail.subject || "메일"} 읽기`,
+        data: { mailId: selectedMail.id },
+      }),
+      completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.read"] })),
+    ]);
     return chatReply(formatMailItem(selectedMail));
   }
 
   if (mailFollowUpAction === "summary") {
     try {
       const summary = await summarizeMail(selectedMail);
-      await saveLastAction(sessionId, {
-        type: "mail_summary",
-        label: `${selectedMail.subject || "메일"} 요약`,
-        data: { mailId: selectedMail.id },
-      });
-      await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.read", "mail.summary"] }));
+      await Promise.all([
+        saveLastAction(sessionId, {
+          type: "mail_summary",
+          label: `${selectedMail.subject || "메일"} 요약`,
+          data: { mailId: selectedMail.id },
+        }),
+        completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.summary"] })),
+      ]);
       return chatReply(`**${selectedMail.subject || "메일"} 요약**\n\n${summary}`);
     } catch (error) {
       console.error("[L-JMAIL] Mail summary failed:", error);
@@ -5064,8 +5133,10 @@ if (mailFollowUpAction) {
       });
       const saved = await saveMailDraft(sessionId, draft);
       if (!saved) throw new Error("Mail draft context was not saved");
-      await saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} ${mailFollowUpAction === "reply_draft" ? "답장" : "전달"} 초안`, data: { mailId: selectedMail.id } });
-      await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.draft"] }));
+      await Promise.all([
+        saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} ${mailFollowUpAction === "reply_draft" ? "답장" : "전달"} 초안`, data: { mailId: selectedMail.id } }),
+        completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.draft"] })),
+      ]);
       return chatReply(formatMailDraft(saved));
     } catch (error) {
       console.error("[L-JMAIL] Reply draft failed:", error);
@@ -5087,8 +5158,10 @@ if (calendarMailDraftRequest) {
     });
     const saved = await saveMailDraft(sessionId, draft);
     if (!saved) throw new Error("Mail draft context was not saved");
-    await saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} 메일 초안`, data: { source: "calendar" } });
-    await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["calendar.get", "mail.draft"] }));
+    await Promise.all([
+      saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} 메일 초안`, data: { source: "calendar" } }),
+      completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["calendar.get", "mail.draft"] })),
+    ]);
     return chatReply(formatMailDraft(saved));
   } catch (error) {
     console.error("[L-JMAIL] Calendar mail draft failed:", error);
@@ -5110,8 +5183,10 @@ if (driveMailDraftRequest) {
     });
     const saved = await saveMailDraft(sessionId, draft);
     if (!saved) throw new Error("Mail draft context was not saved");
-    await saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} 메일 초안`, data: { fileId: driveContext.fileId } });
-    await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["drive.read", "drive.summary", "mail.draft"] }));
+    await Promise.all([
+      saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} 메일 초안`, data: { fileId: driveContext.fileId } }),
+      completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["drive.read", "mail.draft"] })),
+    ]);
     return chatReply(formatMailDraft(saved));
   } catch (error) {
     console.error("[L-JMAIL] Drive mail draft failed:", error);
@@ -5130,8 +5205,10 @@ if (genericMailDraftRequest) {
     });
     const saved = await saveMailDraft(sessionId, draft);
     if (!saved) throw new Error("Mail draft context was not saved");
-    await saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} 메일 초안`, data: { source: "request" } });
-    await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.draft"] }));
+    await Promise.all([
+      saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} 메일 초안`, data: { source: "request" } }),
+      completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.draft"] })),
+    ]);
     return chatReply(formatMailDraft(saved));
   } catch (error) {
     console.error("[L-JMAIL] Mail draft failed:", error);

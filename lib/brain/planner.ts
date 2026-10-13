@@ -130,8 +130,7 @@ function planFromIntent(
 
     case "mail_summary":
       return [
-        buildStep(1, "mail.read", "선택한 메일 본문을 읽는다."),
-        buildStep(2, "mail.summary", "메일의 핵심 내용을 요약한다."),
+        buildStep(1, "mail.summary", "Mail Context에 저장된 선택 메일 본문을 요약한다."),
       ];
 
     case "mail_calendar_extract":
@@ -150,6 +149,12 @@ function planFromIntent(
 
     case "mail_draft":
       return [buildStep(1, "mail.draft", "선택한 자료를 바탕으로 발송 전 메일 초안을 만든다.")];
+
+    case "drive_mail_draft":
+      return [
+        buildStep(1, "drive.read", "선택한 Drive 파일의 최신 내용을 읽는다."),
+        buildStep(2, "mail.draft", "Drive 파일 내용으로 발송 전 메일 초안을 만든다."),
+      ];
 
     case "drive_list":
     case "drive_recent":

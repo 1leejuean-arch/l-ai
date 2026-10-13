@@ -59,26 +59,37 @@ export async function searchLJmail(
     );
   }
 
-  const response = await fetch(
-    `${config.url}/mail/search`,
-    {
-      method: "POST",
-      headers: {
-        Authorization:
-          `Bearer ${config.apiKey}`,
-        "Content-Type":
-          "application/json",
+  const startedAt = Date.now();
+  let response: Response;
+
+  try {
+    response = await fetch(
+      `${config.url}/mail/search`,
+      {
+        method: "POST",
+        headers: {
+          Authorization:
+            `Bearer ${config.apiKey}`,
+          "Content-Type":
+            "application/json",
+        },
+        body: JSON.stringify({
+          query,
+          folder:
+            options?.folder,
+          limit:
+            options?.limit ?? 10,
+        }),
+        cache: "no-store",
       },
-      body: JSON.stringify({
-        query,
-        folder:
-          options?.folder,
-        limit:
-          options?.limit ?? 10,
-      }),
-      cache: "no-store",
-    },
-  );
+    );
+  } finally {
+    console.log(
+      "[L-AI Perf] Mail API:",
+      `${Date.now() - startedAt}ms`,
+      { action: "search" },
+    );
+  }
 
   let result: MailSearchResponse;
 

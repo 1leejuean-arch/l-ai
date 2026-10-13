@@ -9,6 +9,7 @@ import { createReflection } from "@/lib/brain/reflection";
 import "server-only";
 
 import { callCalendarN8n } from "@/lib/calendar/n8n";
+import type { GoogleCalendarEvent } from "@/lib/calendar/types";
 import {
   deleteMemory,
   getMemory,
@@ -74,6 +75,7 @@ export async function handleDriveCalendarFlow(
     pendingOnly?: boolean;
   },
 ): Promise<Response | null> {
+  const flowStartedAt = Date.now();
   /*
    * 1. 이미 추출해둔 일정 후보 처리
    *    - 1번 추가
@@ -207,6 +209,8 @@ if (activeBrainTrace) {
   const added: string[] = [];
   const duplicates: string[] = [];
   const failed: string[] = [];
+  const existingEventsByRange = new Map<string, GoogleCalendarEvent[]>();
+  let duplicateCheckRequests = 0;
 
   /*
    * 처리 완료된 후보의 기존 index.
@@ -240,11 +244,17 @@ if (activeBrainTrace) {
           calendarEvent,
         );
 
-      const existingEvents =
-        await callCalendarN8n(
+      const rangeKey = `${range.start}|${range.end}`;
+      let existingEvents = existingEventsByRange.get(rangeKey);
+
+      if (!existingEvents) {
+        existingEvents = await callCalendarN8n(
           "calendar_get",
           range,
         );
+        existingEventsByRange.set(rangeKey, existingEvents);
+        duplicateCheckRequests += 1;
+      }
 
       /*
        * 이미 존재하는 일정이면
@@ -274,6 +284,12 @@ if (activeBrainTrace) {
         "calendar_create",
         calendarEvent,
       );
+
+      existingEvents.push({
+        summary: calendarEvent.title,
+        start: { dateTime: calendarEvent.start },
+        end: { dateTime: calendarEvent.end },
+      });
 
       await saveLastAction(
         sessionId,
@@ -596,6 +612,18 @@ if (updatedTrace) {
     },
   );
 }
+
+  console.log(
+    "[L-AI Perf] Drive Calendar registration:",
+    `${Date.now() - flowStartedAt}ms`,
+    {
+      selected: selectedIndexes.length,
+      duplicateCheckRequests,
+      created: added.length,
+      duplicates: duplicates.length,
+      failed: failed.length,
+    },
+  );
 
   return reply(
     output.join("\n"),

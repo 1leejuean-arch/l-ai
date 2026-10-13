@@ -109,20 +109,20 @@ const actionHistory: ActionHistoryMemory = [
   ),
 ].slice(0, ACTION_HISTORY_LIMIT);
 
-  const persistence =
-    await saveMemoryAndWait(
+  const [persistence] = await Promise.all([
+    saveMemoryAndWait(
       sessionId,
       "action",
       "last_action",
       memory,
-    );
-
-await saveMemoryAndWait(
-  sessionId,
-  "action",
-  ACTION_HISTORY_MEMORY_KEY,
-  actionHistory,
-);
+    ),
+    saveMemoryAndWait(
+      sessionId,
+      "action",
+      ACTION_HISTORY_MEMORY_KEY,
+      actionHistory,
+    ),
+  ]);
 
   const details = {
     sessionId,
