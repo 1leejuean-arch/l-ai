@@ -173,6 +173,9 @@ if (
       [
         "[최근 Mail 문맥]",
         `검색/참조: ${snapshot.mail.recentQuery}`,
+        snapshot.mail.selectedSubject
+          ? `선택한 메일: ${snapshot.mail.selectedSubject}`
+          : null,
       ].join("\n"),
     );
   }
@@ -498,6 +501,7 @@ recentActions?: Array<{
 
   mail?: {
     recentQuery?: string | null;
+    selectedSubject?: string | null;
   } | null;
 
   brain?: {

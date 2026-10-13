@@ -35,7 +35,11 @@ export type LastActionType =
   | "drive_calendar"
   | "drive_calendar_extract"
   | "memory_recall"
-  | "mail_search";
+  | "mail_search"
+  | "mail_read"
+  | "mail_summary"
+  | "mail_calendar_extract"
+  | "mail_draft";
 
 export type LastActionMemory = {
   type: LastActionType;

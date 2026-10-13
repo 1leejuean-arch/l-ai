@@ -125,6 +125,32 @@ function planFromIntent(
         ),
       ];
 
+    case "mail_read":
+      return [buildStep(1, "mail.read", "선택한 메일 본문을 읽는다.")];
+
+    case "mail_summary":
+      return [
+        buildStep(1, "mail.read", "선택한 메일 본문을 읽는다."),
+        buildStep(2, "mail.summary", "메일의 핵심 내용을 요약한다."),
+      ];
+
+    case "mail_calendar_extract":
+      const mailCalendarSteps = [
+        buildStep(1, "mail.read", "선택한 메일 본문을 읽는다."),
+        buildStep(2, "mail.calendar.extract", "메일에서 일정 후보를 추출한다."),
+      ];
+
+      if (/(?:캘린더|달력).*(?:추가|등록|넣어)|(?:일정|회의).*(?:캘린더|달력).*(?:추가|등록|넣어)/u.test(input.message)) {
+        mailCalendarSteps.push(
+          buildStep(3, "calendar.create", "사용자가 선택한 일정 후보를 Calendar에 등록한다."),
+        );
+      }
+
+      return mailCalendarSteps;
+
+    case "mail_draft":
+      return [buildStep(1, "mail.draft", "선택한 자료를 바탕으로 발송 전 메일 초안을 만든다.")];
+
     case "drive_list":
     case "drive_recent":
       return [
@@ -145,6 +171,47 @@ function planFromMessage(
 ): PlannerStep[] {
   const normalized =
     message.toLowerCase();
+
+  const mentionsMail = /(?:메일|mail|l-jmail)/iu.test(normalized);
+  const asksDraft = /(?:초안|작성|써\s*줘|만들)/u.test(normalized);
+  const asksMailCalendarWork =
+    /메일.*(?:찾아서|검색해서).*?(?:일정|회의).*(?:찾아|추출|캘린더|달력|추가|등록|넣어)/u.test(normalized) ||
+    /메일(?:에|에서|안에|의).*?(?:일정|회의).*(?:찾아|추출|추가|등록|넣어)/u.test(normalized) ||
+    /메일.*?(?:일정|회의).*?(?:캘린더|달력).*(?:추가|등록|넣어)/u.test(normalized);
+  const asksCalendarCreate =
+    /(?:캘린더|달력).*(?:추가|등록|넣어)/u.test(normalized);
+
+  if (mentionsMail && asksMailCalendarWork) {
+    const steps = [
+      buildStep(1, "mail.search", "조건에 맞는 메일을 찾는다."),
+      buildStep(2, "mail.read", "선택한 메일 본문을 읽는다."),
+      buildStep(3, "mail.calendar.extract", "메일에서 일정 후보를 추출한다."),
+    ];
+
+    if (asksCalendarCreate) {
+      steps.push(
+        buildStep(4, "calendar.create", "사용자가 선택한 일정 후보를 Calendar에 등록한다."),
+      );
+    }
+
+    return steps;
+  }
+
+  if (mentionsMail && asksDraft && /(?:파일|문서|drive|드라이브)/iu.test(normalized)) {
+    return [
+      buildStep(1, "drive.search", "초안의 근거가 될 Drive 파일을 찾는다."),
+      buildStep(2, "drive.read", "Drive 파일 내용을 읽는다."),
+      buildStep(3, "drive.summary", "메일에 사용할 핵심 내용을 정리한다."),
+      buildStep(4, "mail.draft", "정리한 내용으로 메일 초안을 만든다."),
+    ];
+  }
+
+  if (mentionsMail && asksDraft && /(?:일정|회의|캘린더|calendar)/iu.test(normalized)) {
+    return [
+      buildStep(1, "calendar.get", "메일에 사용할 Calendar 일정을 조회한다."),
+      buildStep(2, "mail.draft", "일정 내용으로 메일 초안을 만든다."),
+    ];
+  }
 
 const isContinuationSelection =
   /^\s*\d+\s*번(?:\s*(?:추가|등록|넣어|선택))?/u.test(

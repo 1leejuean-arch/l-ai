@@ -119,6 +119,69 @@ export const L_AI_TOOLS: LAlTool[] = [
   },
 
   {
+    id: "mail.read",
+    domain: "mail",
+    name: "L-JMAIL 메일 읽기",
+    description: "선택한 L-JMAIL 메일의 내용을 읽는다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "mail.summary",
+    domain: "mail",
+    name: "L-JMAIL 메일 요약",
+    description: "선택한 메일의 본문을 요약한다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "mail.calendar.extract",
+    domain: "mail",
+    name: "메일 일정 추출",
+    description: "선택한 메일에서 Calendar 일정 후보를 추출한다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "mail.draft",
+    domain: "mail",
+    name: "메일 초안 작성",
+    description: "Calendar, Drive 또는 메일 내용을 바탕으로 발송 전 초안을 만든다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "mail.send",
+    domain: "mail",
+    name: "메일 발송",
+    description: "확정된 메일을 발송한다.",
+    risk: "medium",
+    requiresConfirmation: true,
+  },
+
+  {
+    id: "mail.reply.send",
+    domain: "mail",
+    name: "답장 발송",
+    description: "확정된 답장을 발송한다.",
+    risk: "medium",
+    requiresConfirmation: true,
+  },
+
+  {
+    id: "mail.forward.send",
+    domain: "mail",
+    name: "전달 발송",
+    description: "확정된 전달 메일을 발송한다.",
+    risk: "medium",
+    requiresConfirmation: true,
+  },
+
+  {
     id: "ai.respond",
     domain: "ai",
     name: "일반 AI 응답",

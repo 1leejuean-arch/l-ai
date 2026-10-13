@@ -1,7 +1,28 @@
 import {
   getMailContext,
   saveMailContext,
+  saveMailDraft,
+  selectMailContextResult,
 } from "@/lib/mail/context";
+import type { MailContextItem, MailDraft } from "@/lib/mail/context";
+import {
+  getMailFollowUpAction,
+  isCalendarMailDraftRequest,
+  isDriveMailDraftRequest,
+  isGenericMailDraftRequest,
+  parseDirectMailSearchQuery,
+  parseMailSelectionIndex,
+} from "@/lib/mail/intent";
+import {
+  calendarEventToDraftSource,
+  createMailDraft,
+  extractCalendarEventsFromMail,
+  summarizeMail,
+} from "@/lib/mail/ai";
+import {
+  handlePendingMailCalendar,
+  startMailCalendarCandidates,
+} from "@/lib/mail/calendar-flow";
 
 import {
   formatSelfCheckReport,
@@ -40,9 +61,11 @@ import {
 } from "@/lib/mail/client";
 
 import {
+  completeBrainTrace,
   createBrainTrace,
   getActiveBrainTrace,
   getLastBrainTrace,
+  updateBrainTrace,
 } from "@/lib/brain/trace";
 
 import { createReflection } from "@/lib/brain/reflection";
@@ -890,6 +913,144 @@ async function handleDriveSearch(
       502,
     );
   }
+}
+
+function formatMailItem(mail: MailContextItem) {
+  return [
+    `**${mail.subject || "(제목 없음)"}**`,
+    `보낸 사람: ${mail.senderName || mail.sender || "알 수 없음"}`,
+    mail.date ? `날짜: ${mail.date}` : null,
+    "",
+    mail.body || mail.preview || "본문이 없습니다.",
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
+}
+
+function formatMailDraft(draft: MailDraft) {
+  return [
+    "메일 초안을 만들었어. 아직 전송하지 않았어.",
+    "",
+    `받는 사람: ${draft.to || "지정 필요"}`,
+    `제목: ${draft.subject}`,
+    "본문:",
+    draft.body,
+    "",
+    "현재 연결된 L-JMAIL 백엔드에는 발송 API가 없어 이 초안은 실제로 전송할 수 없어.",
+  ].join("\n");
+}
+
+async function handleMailSearch(sessionId: string, query: string) {
+  try {
+    const emails = await searchLJmail(query, { limit: 10 });
+    await saveLastAction(sessionId, {
+      type: "mail_search",
+      label: `${query} 메일 검색`,
+      data: { query, resultCount: emails.length },
+    });
+    saveMailContext(sessionId, query, emails);
+
+    const activeTrace = await getActiveBrainTrace(sessionId);
+    if (activeTrace) {
+      const reflection = createReflection(activeTrace.plan, {
+        completedToolIds: ["mail.search"],
+        waitingFor: emails.length > 1 ? "user_selection" : null,
+      });
+      if (emails.length > 1) {
+        await updateBrainTrace(sessionId, {
+          state: "waiting",
+          waitingFor: "user_selection",
+          reflection,
+        });
+      } else {
+        await completeBrainTrace(sessionId, reflection);
+      }
+    }
+
+    if (emails.length === 0) {
+      return chatReply(`'${query}'와 관련된 메일을 찾지 못했어.`);
+    }
+
+    const lines = emails.map((email, index) => {
+      const sender = email.from_name || email.from_email || "알 수 없는 발신자";
+      const subject = email.subject || "(제목 없음)";
+      const preview = email.preview || email.body_text || "";
+      const date = email.received_at || email.sent_at || email.created_at || "";
+      return [
+        `${index + 1}. **${subject}**`,
+        `   보낸 사람: ${sender}`,
+        date ? `   날짜: ${date}` : null,
+        preview ? `   미리보기: ${preview.slice(0, 160)}` : null,
+      ].filter(Boolean).join("\n");
+    });
+
+    return chatReply([
+      `**'${query}' 관련 메일 ${emails.length}개를 찾았어.**`,
+      "",
+      ...lines,
+      emails.length > 1 ? "\n열어 볼 메일 번호를 말해줘." : "",
+    ].join("\n\n"));
+  } catch (error) {
+    console.error("[L-JMAIL] Mail search failed:", error);
+    return chatError("L-JMAIL 메일 검색에 실패했어.", 502);
+  }
+}
+
+async function handleEarlyMailSelection(sessionId: string, message: string) {
+  if (!/\d+\s*번|(?:첫|두|세|네|다섯)\s*(?:번|번째|째)/u.test(message)) return null;
+  const context = await getMailContext(sessionId);
+  const explicitlyMentionsMail = /메일/u.test(message);
+  if (
+    !context ||
+    context.results.length === 0 ||
+    (!context.selectionPending && !explicitlyMentionsMail)
+  ) {
+    return null;
+  }
+  const index = parseMailSelectionIndex(message, context.results.length);
+  if (index === null) return null;
+  const mail = await selectMailContextResult(sessionId, index);
+  if (!mail) return null;
+  await saveLastAction(sessionId, {
+    type: "mail_read",
+    label: `${mail.subject || "메일"} 읽기`,
+    data: { mailId: mail.id },
+  });
+  return chatReply(formatMailItem(mail));
+}
+
+function mailDriveQuery(mail: MailContextItem) {
+  return (mail.subject || "")
+    .replace(/^(?:(?:re|fw|fwd)\s*:\s*)+/iu, "")
+    .replace(/^\[[^\]]+\]\s*/u, "")
+    .trim();
+}
+
+async function resolveCalendarEventForDraft(sessionId: string, message: string) {
+  const context = getCalendarContext(sessionId);
+  if (context?.events.length === 1) return context.events[0];
+
+  const calendarRequest = message.replace(/(?:내용으로|내용을)?\s*메일.*$/u, " 일정 보여줘");
+  const parsed = await parseCalendarRequest(calendarRequest);
+  if (parsed.kind !== "get") return null;
+  const events = await callCalendarN8n("calendar_get", parsed.range);
+  const normalized = message.replace(/\s+/gu, "");
+  const selected = events.length === 1
+    ? events[0]
+    : events.find((event) =>
+        event.summary
+          ? normalized.includes(event.summary.replace(/\s+/gu, ""))
+          : false,
+      );
+  if (!selected) return null;
+  const start = selected.start.dateTime || selected.start.date;
+  const end = selected.end.dateTime || selected.end.date;
+  if (!start || !end) return null;
+  return {
+    title: selected.summary || "일정 안내",
+    start,
+    end,
+  } satisfies CalendarEvent;
 }
 
 async function executePendingAction(sessionId: string) {
@@ -2531,6 +2692,8 @@ recentActions:
   ? {
       recentQuery:
         mailContextForRouter.recentQuery,
+      selectedSubject:
+        mailContextForRouter.selectedMail?.subject ?? null,
     }
   : null,
 
@@ -3549,6 +3712,19 @@ let message = rawMessage;
  * Pending과 짧은 번호 선택은 의미 기억/AI 라우팅보다 먼저 처리한다.
  * 특히 "2번"은 진행 중인 작업이 있을 때 Action History로 넘어가면 안 된다.
  */
+const explicitlySelectsMail =
+  /메일/u.test(rawMessage) &&
+  /\d+\s*번|(?:첫|두|세|네|다섯)\s*(?:번|번째|째)/u.test(rawMessage);
+
+// 명시적으로 "메일"을 지목한 번호 선택은 다른 도메인 Pending보다 분명하다.
+const explicitMailSelectionResponse = explicitlySelectsMail
+  ? await handleEarlyMailSelection(sessionId, rawMessage)
+  : null;
+
+if (explicitMailSelectionResponse) {
+  return explicitMailSelectionResponse;
+}
+
 const earlyShortReply =
   normalizeShortReply(rawMessage);
 
@@ -3578,6 +3754,22 @@ const earlyDriveCalendarPendingResponse =
 
 if (earlyDriveCalendarPendingResponse) {
   return earlyDriveCalendarPendingResponse;
+}
+
+// Calendar와 Drive→Calendar Pending이 없을 때 최근 Mail 결과를 선택한다.
+const earlyMailSelectionResponse = !explicitlySelectsMail
+  ? await handleEarlyMailSelection(sessionId, rawMessage)
+  : null;
+
+if (earlyMailSelectionResponse) {
+  return earlyMailSelectionResponse;
+}
+
+const earlyMailCalendarPendingResponse =
+  await handlePendingMailCalendar(rawMessage, sessionId);
+
+if (earlyMailCalendarPendingResponse) {
+  return earlyMailCalendarPendingResponse;
 }
 
 if (
@@ -3884,6 +4076,32 @@ const looksLikeDriveToCalendarMessage =
 const directDriveSearchIntent =
   parseDriveSearchIntent(rawMessage);
 
+const directMailSearchQuery =
+  parseDirectMailSearchQuery(rawMessage);
+
+const mailFollowUpAction =
+  getMailFollowUpAction(rawMessage);
+
+const calendarMailDraftRequest =
+  isCalendarMailDraftRequest(rawMessage);
+
+const driveMailDraftRequest =
+  isDriveMailDraftRequest(rawMessage);
+
+const genericMailDraftRequest =
+  !calendarMailDraftRequest &&
+  !driveMailDraftRequest &&
+  !mailFollowUpAction &&
+  isGenericMailDraftRequest(rawMessage);
+
+const mailCalendarCompoundRequest =
+  Boolean(directMailSearchQuery) &&
+  (
+    /메일.*(?:찾아서|검색해서).*?(?:일정|회의).*(?:찾아|추출|캘린더|달력|추가|등록|넣어)/u.test(rawMessage) ||
+    /메일(?:에|에서|안에|의).*?(?:일정|회의).*(?:찾아|추출|추가|등록|넣어)/u.test(rawMessage) ||
+    /메일.*?(?:일정|회의).*?(?:캘린더|달력).*(?:추가|등록|넣어)/u.test(rawMessage)
+  );
+
 const looksLikeDirectDriveSearchMessage =
   directDriveSearchIntent?.action ===
     "search" &&
@@ -3905,6 +4123,11 @@ const shouldBypassSemanticMemory =
   looksLikeCalendarToDriveLookupMessage ||
   looksLikeDriveToCalendarMessage ||
   looksLikeDirectDriveSearchMessage ||
+  Boolean(directMailSearchQuery) ||
+  Boolean(mailFollowUpAction) ||
+  calendarMailDraftRequest ||
+  driveMailDraftRequest ||
+  genericMailDraftRequest ||
   looksLikeDriveCalendarAddReply(
     rawMessage,
   ) ||
@@ -4653,11 +4876,25 @@ const prePlan = createPlan({
       ? "사용자 후속 응답"
       : rawMessage,
   intent:
-  looksLikeCalendarToDriveLookupMessage ||
-  looksLikeDirectDriveSearchMessage
-    ? "drive_search"
-    : null,
+  directMailSearchQuery && !mailCalendarCompoundRequest
+    ? "mail_search"
+    : mailFollowUpAction === "read"
+      ? "mail_read"
+      : mailFollowUpAction === "summary"
+        ? "mail_summary"
+        : mailFollowUpAction === "calendar"
+          ? "mail_calendar_extract"
+          : calendarMailDraftRequest || driveMailDraftRequest || genericMailDraftRequest || mailFollowUpAction === "reply_draft" || mailFollowUpAction === "forward_draft"
+            ? "mail_draft"
+            : looksLikeCalendarToDriveLookupMessage || looksLikeDirectDriveSearchMessage
+              ? "drive_search"
+              : null,
 confidence:
+  directMailSearchQuery ||
+  mailFollowUpAction ||
+  calendarMailDraftRequest ||
+  driveMailDraftRequest ||
+  genericMailDraftRequest ||
   looksLikeCalendarToDriveLookupMessage ||
   looksLikeDirectDriveSearchMessage
     ? 1
@@ -4746,6 +4983,161 @@ console.log(
   "[L-AI Perf] Context hydration:",
   `${Date.now() - contextHydrationStartedAt}ms`,
 );
+
+if (directMailSearchQuery) {
+  const response = await handleMailSearch(sessionId, directMailSearchQuery);
+  return response;
+}
+
+if (mailFollowUpAction) {
+  const mailContext = await getMailContext(sessionId);
+
+  if (mailFollowUpAction === "send") {
+    if (!mailContext?.draft) {
+      return chatReply("전송할 메일 초안이 없어. 먼저 초안을 만들어줘.");
+    }
+    return chatReply(
+      "초안은 저장돼 있지만 현재 연결된 L-JMAIL 백엔드에는 send/reply/forward API가 없어 실제 발송은 하지 않았어.",
+    );
+  }
+
+  const selectedMail =
+    mailContext?.selectedMail ||
+    (mailContext?.results.length === 1 ? mailContext.results[0] : null);
+
+  if (!selectedMail) {
+    return chatReply("먼저 메일을 검색하고 열어 볼 메일을 선택해줘.");
+  }
+
+  if (mailFollowUpAction === "read") {
+    await saveLastAction(sessionId, {
+      type: "mail_read",
+      label: `${selectedMail.subject || "메일"} 읽기`,
+      data: { mailId: selectedMail.id },
+    });
+    await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.read"] }));
+    return chatReply(formatMailItem(selectedMail));
+  }
+
+  if (mailFollowUpAction === "summary") {
+    try {
+      const summary = await summarizeMail(selectedMail);
+      await saveLastAction(sessionId, {
+        type: "mail_summary",
+        label: `${selectedMail.subject || "메일"} 요약`,
+        data: { mailId: selectedMail.id },
+      });
+      await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.read", "mail.summary"] }));
+      return chatReply(`**${selectedMail.subject || "메일"} 요약**\n\n${summary}`);
+    } catch (error) {
+      console.error("[L-JMAIL] Mail summary failed:", error);
+      return chatError("메일 요약에 실패했어.", 502);
+    }
+  }
+
+  if (mailFollowUpAction === "calendar") {
+    try {
+      const events = await extractCalendarEventsFromMail(selectedMail);
+      return startMailCalendarCandidates(sessionId, selectedMail, events);
+    } catch (error) {
+      console.error("[L-JMAIL] Calendar extraction failed:", error);
+      return chatError("메일에서 일정 정보를 추출하지 못했어.", 502);
+    }
+  }
+
+  if (mailFollowUpAction === "drive") {
+    const query = mailDriveQuery(selectedMail);
+    return query
+      ? handleDriveSearch(sessionId, query)
+      : chatReply("이 메일에는 Drive 검색에 사용할 제목이 없어.");
+  }
+
+  if (mailFollowUpAction === "reply_draft" || mailFollowUpAction === "forward_draft") {
+    try {
+      const draft = await createMailDraft({
+        kind: mailFollowUpAction === "reply_draft" ? "reply" : "forward",
+        to: mailFollowUpAction === "reply_draft" ? selectedMail.sender : null,
+        sourceLabel: selectedMail.subject || "선택한 메일",
+        sourceText: selectedMail.body || selectedMail.preview || "",
+        request: rawMessage,
+        originalSubject: selectedMail.subject,
+      });
+      const saved = await saveMailDraft(sessionId, draft);
+      if (!saved) throw new Error("Mail draft context was not saved");
+      await saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} ${mailFollowUpAction === "reply_draft" ? "답장" : "전달"} 초안`, data: { mailId: selectedMail.id } });
+      await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.draft"] }));
+      return chatReply(formatMailDraft(saved));
+    } catch (error) {
+      console.error("[L-JMAIL] Reply draft failed:", error);
+      return chatError("답장 초안을 만들지 못했어.", 502);
+    }
+  }
+}
+
+if (calendarMailDraftRequest) {
+  try {
+    const event = await resolveCalendarEventForDraft(sessionId, rawMessage);
+    if (!event) return chatReply("메일 초안에 사용할 일정을 하나로 특정해줘.");
+    const draft = await createMailDraft({
+      kind: "new",
+      to: null,
+      sourceLabel: event.title,
+      sourceText: calendarEventToDraftSource(event),
+      request: rawMessage,
+    });
+    const saved = await saveMailDraft(sessionId, draft);
+    if (!saved) throw new Error("Mail draft context was not saved");
+    await saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} 메일 초안`, data: { source: "calendar" } });
+    await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["calendar.get", "mail.draft"] }));
+    return chatReply(formatMailDraft(saved));
+  } catch (error) {
+    console.error("[L-JMAIL] Calendar mail draft failed:", error);
+    return chatError("일정으로 메일 초안을 만들지 못했어.", 502);
+  }
+}
+
+if (driveMailDraftRequest) {
+  const driveContext = getDriveContext(sessionId);
+  if (!driveContext) return chatReply("먼저 메일 초안에 사용할 Drive 파일을 선택해줘.");
+  try {
+    const fileText = await readGoogleDriveFile(driveContext.fileId);
+    const draft = await createMailDraft({
+      kind: "new",
+      to: null,
+      sourceLabel: driveContext.fileName,
+      sourceText: fileText,
+      request: rawMessage,
+    });
+    const saved = await saveMailDraft(sessionId, draft);
+    if (!saved) throw new Error("Mail draft context was not saved");
+    await saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} 메일 초안`, data: { fileId: driveContext.fileId } });
+    await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["drive.read", "drive.summary", "mail.draft"] }));
+    return chatReply(formatMailDraft(saved));
+  } catch (error) {
+    console.error("[L-JMAIL] Drive mail draft failed:", error);
+    return chatError("Drive 파일로 메일 초안을 만들지 못했어.", 502);
+  }
+}
+
+if (genericMailDraftRequest) {
+  try {
+    const draft = await createMailDraft({
+      kind: "new",
+      to: null,
+      sourceLabel: "사용자 요청",
+      sourceText: rawMessage,
+      request: rawMessage,
+    });
+    const saved = await saveMailDraft(sessionId, draft);
+    if (!saved) throw new Error("Mail draft context was not saved");
+    await saveLastAction(sessionId, { type: "mail_draft", label: `${saved.subject} 메일 초안`, data: { source: "request" } });
+    await completeBrainTrace(sessionId, createReflection(prePlan, { completedToolIds: ["mail.draft"] }));
+    return chatReply(formatMailDraft(saved));
+  } catch (error) {
+    console.error("[L-JMAIL] Mail draft failed:", error);
+    return chatError("메일 초안을 만들지 못했어.", 502);
+  }
+}
 
 if (
   looksLikeDirectDriveSearchMessage &&
@@ -5258,99 +5650,8 @@ if (routedCalendarResponse) {
 if (
   routedMessage?.intent === "mail_search"
 ) {
-  try {
-    const query =
-      routedMessage.target.searchQuery?.trim() ||
-      message.trim();
-
-    const emails = await searchLJmail(
-  query,
-  {
-    limit: 10,
-  },
-);
-
-await saveLastAction(
-  sessionId,
-  {
-    type: "mail_search",
-    label: `${query} 메일 검색`,
-    data: {
-      query,
-      resultCount: emails.length,
-    },
-  },
-);
-
-saveMailContext(
-  sessionId,
-  query,
-);
-
-if (emails.length === 0) {
-
-      return chatReply(
-        query
-          ? `'${query}'와 관련된 메일을 찾지 못했어.`
-          : "조건에 맞는 메일을 찾지 못했어.",
-      );
-    }
-
-    const lines = emails.map(
-      (email, index) => {
-        const sender =
-          email.from_name ||
-          email.from_email ||
-          "알 수 없는 발신자";
-
-        const subject =
-          email.subject ||
-          "(제목 없음)";
-
-        const preview =
-          email.preview ||
-          email.body_text ||
-          "";
-
-        const date =
-          email.received_at ||
-          email.sent_at ||
-          email.created_at ||
-          "";
-
-        return [
-          `${index + 1}. **${subject}**`,
-          `   보낸 사람: ${sender}`,
-          date
-            ? `   날짜: ${date}`
-            : null,
-          preview
-            ? `   미리보기: ${preview.slice(0, 160)}`
-            : null,
-        ]
-          .filter(Boolean)
-          .join("\n");
-      },
-    );
-
-    return chatReply(
-      [
-        `**'${query}' 관련 메일 ${emails.length}개를 찾았어.**`,
-        "",
-        ...lines,
-      ].join("\n\n"),
-    );
-  } catch (error) {
-    console.error(
-      "[L-JMAIL] Mail search failed:",
-      error,
-    );
-
-    return chatError(
-      "L-JMAIL 메일 검색에 실패했어.",
-      502,
-    );
-  }
+  const query = routedMessage.target.searchQuery?.trim() || message.trim();
+  return handleMailSearch(sessionId, query);
 }
 
   /*
