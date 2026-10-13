@@ -1,6 +1,7 @@
 "use client";
 
 import { N8nStatus } from "./n8n-status";
+import { LocalAgentStatus } from "./local-agent-status";
 import { useEffect, useRef, useState } from "react";
 import type {
   ChatApiError,
@@ -162,7 +163,10 @@ if (!isChatApiResponse(data)) {
             Core v0.1
           </div>
 
-          <N8nStatus />
+          <div className="hidden items-center gap-2 md:flex">
+            <N8nStatus />
+            <LocalAgentStatus />
+          </div>
         </div>
       </header>
 

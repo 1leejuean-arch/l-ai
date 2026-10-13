@@ -39,7 +39,17 @@ export type LastActionType =
   | "mail_read"
   | "mail_summary"
   | "mail_calendar_extract"
-  | "mail_draft";
+  | "mail_draft"
+  | "local_app_open"
+  | "local_app_close"
+  | "local_browser_open"
+  | "local_file_search"
+  | "local_file_open"
+  | "local_file_reveal"
+  | "local_file_rename"
+  | "local_file_move"
+  | "local_file_copy"
+  | "local_file_delete";
 
 export type LastActionMemory = {
   type: LastActionType;

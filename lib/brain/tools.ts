@@ -9,6 +9,7 @@ export type LAlTool = {
   | "calendar"
   | "drive"
   | "mail"
+  | "local"
   | "system"
   | "ai";
   name: string;
@@ -178,6 +179,105 @@ export const L_AI_TOOLS: LAlTool[] = [
     name: "전달 발송",
     description: "확정된 전달 메일을 발송한다.",
     risk: "medium",
+    requiresConfirmation: true,
+  },
+
+  {
+    id: "local.app.open",
+    domain: "local",
+    name: "Windows 프로그램 실행",
+    description: "허용 목록에 등록된 Windows 프로그램을 실행한다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "local.app.close",
+    domain: "local",
+    name: "Windows 프로그램 종료",
+    description: "허용 목록에 등록된 Windows 프로그램에 정상 종료를 요청한다.",
+    risk: "medium",
+    requiresConfirmation: true,
+  },
+
+  {
+    id: "local.browser.open",
+    domain: "local",
+    name: "웹사이트 열기",
+    description: "검증된 http 또는 https 웹사이트를 브라우저로 연다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "local.browser.search",
+    domain: "local",
+    name: "브라우저 검색",
+    description: "지원 사이트의 검증된 검색 URL을 브라우저로 연다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "local.file.search",
+    domain: "local",
+    name: "로컬 파일 검색",
+    description: "허용된 사용자 폴더에서 로컬 파일을 검색한다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "local.file.open",
+    domain: "local",
+    name: "로컬 파일 열기",
+    description: "실행 파일을 제외한 로컬 파일을 기본 연결 프로그램으로 연다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "local.file.reveal",
+    domain: "local",
+    name: "탐색기에서 파일 보기",
+    description: "로컬 파일의 위치를 Windows 탐색기에서 표시한다.",
+    risk: "low",
+    requiresConfirmation: false,
+  },
+
+  {
+    id: "local.file.rename",
+    domain: "local",
+    name: "로컬 파일 이름 변경",
+    description: "선택한 로컬 파일의 이름을 변경한다.",
+    risk: "medium",
+    requiresConfirmation: true,
+  },
+
+  {
+    id: "local.file.move",
+    domain: "local",
+    name: "로컬 파일 이동",
+    description: "선택한 파일을 허용된 사용자 폴더로 이동한다.",
+    risk: "medium",
+    requiresConfirmation: true,
+  },
+
+  {
+    id: "local.file.copy",
+    domain: "local",
+    name: "로컬 파일 복사",
+    description: "선택한 파일을 허용된 사용자 폴더로 복사한다.",
+    risk: "medium",
+    requiresConfirmation: true,
+  },
+
+  {
+    id: "local.file.delete",
+    domain: "local",
+    name: "로컬 파일 휴지통 이동",
+    description: "선택한 일반 파일을 Windows 휴지통으로 이동한다.",
+    risk: "high",
     requiresConfirmation: true,
   },
 

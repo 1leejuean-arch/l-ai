@@ -30,6 +30,11 @@ import {
 } from "@/lib/diagnostics/self-check";
 
 import {
+  handleLocalAction,
+  handlePendingLocalAction,
+} from "@/lib/local-agent/flow";
+
+import {
   appendLearningProfileEntry,
   clearPendingLearningCandidates,
   clearPendingLearningConflict,
@@ -3772,6 +3777,21 @@ if (earlyDriveCalendarPendingResponse) {
   return earlyDriveCalendarPendingResponse;
 }
 
+const explicitlySelectsLocalFile =
+  /(?:파일|탐색기|폴더)/u.test(rawMessage) &&
+  /\d+\s*번|(?:첫|두|세|네|다섯)\s*(?:번|번째|째)/u.test(rawMessage);
+
+const explicitLocalActionResponse = explicitlySelectsLocalFile
+  ? await handleLocalAction(
+      sessionId,
+      rawMessage,
+    )
+  : null;
+
+if (explicitLocalActionResponse) {
+  return chatReply(explicitLocalActionResponse);
+}
+
 // Calendar와 Drive→Calendar Pending이 없을 때 최근 Mail 결과를 선택한다.
 const earlyMailSelectionResponse = !explicitlySelectsMail
   ? await handleEarlyMailSelection(sessionId, rawMessage)
@@ -3786,6 +3806,26 @@ const earlyMailCalendarPendingResponse =
 
 if (earlyMailCalendarPendingResponse) {
   return earlyMailCalendarPendingResponse;
+}
+
+const earlyLocalPendingResponse =
+  await handlePendingLocalAction(
+    sessionId,
+    rawMessage,
+  );
+
+if (earlyLocalPendingResponse) {
+  return chatReply(earlyLocalPendingResponse);
+}
+
+const earlyLocalActionResponse =
+  await handleLocalAction(
+    sessionId,
+    rawMessage,
+  );
+
+if (earlyLocalActionResponse) {
+  return chatReply(earlyLocalActionResponse);
 }
 
 if (

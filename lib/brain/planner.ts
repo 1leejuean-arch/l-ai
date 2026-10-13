@@ -156,6 +156,39 @@ function planFromIntent(
         buildStep(2, "mail.draft", "Drive 파일 내용으로 발송 전 메일 초안을 만든다."),
       ];
 
+    case "local_app_open":
+      return [buildStep(1, "local.app.open", "허용된 Windows 프로그램을 실행한다.")];
+
+    case "local_app_close":
+      return [buildStep(1, "local.app.close", "확인 후 Windows 프로그램에 종료를 요청한다.")];
+
+    case "local_browser_open":
+      return [buildStep(1, "local.browser.open", "검증된 웹사이트 URL을 연다.")];
+
+    case "local_browser_search":
+      return [buildStep(1, "local.browser.search", "지원 사이트의 검색 URL을 연다.")];
+
+    case "local_file_search":
+      return [buildStep(1, "local.file.search", "허용된 로컬 폴더에서 파일을 검색한다.")];
+
+    case "local_file_open":
+      return [buildStep(1, "local.file.open", "선택한 일반 파일을 연다.")];
+
+    case "local_file_reveal":
+      return [buildStep(1, "local.file.reveal", "선택한 파일을 탐색기에서 표시한다.")];
+
+    case "local_file_rename":
+      return [buildStep(1, "local.file.rename", "확인 후 선택한 파일 이름을 변경한다.")];
+
+    case "local_file_move":
+      return [buildStep(1, "local.file.move", "확인 후 선택한 파일을 이동한다.")];
+
+    case "local_file_copy":
+      return [buildStep(1, "local.file.copy", "확인 후 선택한 파일을 복사한다.")];
+
+    case "local_file_delete":
+      return [buildStep(1, "local.file.delete", "확인 후 선택한 파일을 휴지통으로 이동한다.")];
+
     case "drive_list":
     case "drive_recent":
       return [

@@ -6,11 +6,14 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "local-agent": "node local-agent/server.mjs",
     "lint": "eslint",
     "test:calendar-flow": "node scripts/calendar-flow-test.mjs",
     "test:drive-search": "node scripts/drive-search-test.mjs",
     "test:mail-flow": "node scripts/mail-flow-test.mjs",
-    "test:health-cache": "node scripts/health-cache-test.mjs"
+    "test:health-cache": "node scripts/health-cache-test.mjs",
+    "test:local-agent": "node scripts/local-agent-test.mjs",
+    "test:local-flow": "node scripts/local-flow-test.mjs"
   },
   "dependencies": {
     "next": "16.3.3",

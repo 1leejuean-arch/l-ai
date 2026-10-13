@@ -36,6 +36,11 @@ import {
 } from "@/lib/brain/planner";
 
 import {
+  getLocalAgentHealth,
+  LocalAgentConfigurationError,
+} from "@/lib/local-agent/client";
+
+import {
   getAvailableToolIds,
 } from "@/lib/brain/tools";
 
@@ -285,6 +290,25 @@ async function checkLearning(
   };
 }
 
+async function checkLocalAgent() {
+  try {
+    const health = await getLocalAgentHealth();
+    return {
+      message:
+        `Windows Local Agent 연결 정상 · 기능 ${health.capabilities.length}개`,
+    };
+  } catch (error) {
+    if (error instanceof LocalAgentConfigurationError) {
+      return {
+        status: "warning" as const,
+        message: "Local Agent 토큰이 설정되지 않아 PC 제어 기능은 비활성 상태야.",
+      };
+    }
+
+    throw error;
+  }
+}
+
 async function checkBrain() {
   const toolIds =
     getAvailableToolIds();
@@ -300,6 +324,17 @@ async function checkBrain() {
     "drive.summary",
     "drive.calendar.extract",
     "mail.search",
+    "local.app.open",
+    "local.app.close",
+    "local.browser.open",
+    "local.browser.search",
+    "local.file.search",
+    "local.file.open",
+    "local.file.reveal",
+    "local.file.rename",
+    "local.file.move",
+    "local.file.copy",
+    "local.file.delete",
     "ai.respond",
   ];
 
@@ -345,6 +380,24 @@ async function checkBrain() {
   if (!hasMailSearch) {
     throw new Error(
       "Brain Planner가 mail_search를 mail.search로 계획하지 못했어.",
+    );
+  }
+
+  const localDeletePlan = createPlan({
+    message: "그 파일 삭제해줘",
+    intent: "local_file_delete",
+    confidence: 1,
+  });
+
+  if (
+    localDeletePlan.risk !== "high" ||
+    localDeletePlan.requiresConfirmation !== true ||
+    !localDeletePlan.steps.some(
+      (step) => step.toolId === "local.file.delete",
+    )
+  ) {
+    throw new Error(
+      "Brain Planner가 local.file.delete의 위험도와 확인 단계를 만들지 못했어.",
     );
   }
 
@@ -423,6 +476,12 @@ export async function runSelfCheck(
         "brain",
         "L-AI Brain",
         checkBrain,
+      ),
+
+      runCheck(
+        "local_agent",
+        "Windows Local Agent",
+        checkLocalAgent,
       ),
     ]);
 
